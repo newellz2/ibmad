@@ -31,7 +31,7 @@ pub struct ib_user_mad_reg_req2 {
     pub method_mask: [u64; 2],
     pub oui: u32,
     pub rmpp_version: u8,
-    pub resered: [u8; 3],
+    pub reserved: [u8; 3],
 }
 
 
