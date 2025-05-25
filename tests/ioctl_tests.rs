@@ -7,12 +7,12 @@ mod ioctl_tests {
     fn ib_enable_pkey_success() {
         
         match std::fs::File::options().read(true).write(true).open("/dev/infiniband/umad0") {
-            Ok(mut file) => {
+            Ok(file) => {
                 let fd = std::os::fd::AsRawFd::as_raw_fd(&file);
 
                 // Enable PKeys
                 let r = unsafe {
-                    ibmad::ib_enable_pkey(fd)
+                    ibmad::ib_user_mad_enable_pkey(fd)
                 };
 
                 match r {
@@ -45,14 +45,14 @@ mod ioctl_tests {
         };
 
         match std::fs::File::options().read(true).write(true).open("/dev/infiniband/umad0") {
-            Ok(mut file) => {
+            Ok(file) => {
                 let fd = std::os::fd::AsRawFd::as_raw_fd(&file);
 
                 let req_ptr: *mut ibmad::ib_user_mad_reg_req = &mut req;
 
                 // Enable PKeys
                 let r = unsafe {
-                    ibmad::ib_enable_pkey(fd)
+                    ibmad::ib_user_mad_enable_pkey(fd)
                 };
 
                 match r {
@@ -66,7 +66,7 @@ mod ioctl_tests {
 
                 // Register agent
                 let r = unsafe { 
-                    ibmad::ib_register_agent(fd, req_ptr)
+                    ibmad::ib_user_mad_register_agent(fd, req_ptr)
                 };
 
                 match r {
@@ -102,14 +102,14 @@ mod ioctl_tests {
         };
 
         match std::fs::File::options().read(true).write(true).open("/dev/infiniband/umad0") {
-            Ok(mut file) => {
+            Ok(file) => {
                 let fd = std::os::fd::AsRawFd::as_raw_fd(&file);
 
                 let req_ptr: *mut ibmad::ib_user_mad_reg_req2 = &mut req;
 
                 // Enable PKeys
                 let r = unsafe {
-                    ibmad::ib_enable_pkey(fd)
+                    ibmad::ib_user_mad_enable_pkey(fd)
                 };
 
                 match r {
@@ -117,21 +117,21 @@ mod ioctl_tests {
                         assert!(i > -1, "PKey enabled")
                     }
                     Err(_) =>{
-                        assert!(false, "Failed to enable Pkeys")
+                        assert!(false, "Failed to enable PKeys")
                     }
                 }
 
                 // Register agent
                 let r = unsafe { 
-                    ibmad::ib_register_agent2(fd, req_ptr)
+                    ibmad::ib_user_mad_register_agent2(fd, req_ptr)
                 };
 
                 match r {
                     Ok(i) => {
-                        assert!(i > -1, "Agent registered")
+                        assert!(i > -1, "Agent2 registered")
                     }
                     Err(_) =>{
-                        assert!(false, "Failed to register agent")
+                        assert!(false, "Failed to register agent2")
                     }
                 }
             }

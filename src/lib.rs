@@ -4,6 +4,8 @@ pub const IB_IOCTL_MAGIC: u8 = 0x1b as u8;
 pub const IB_IOCTL_REG_AGENT: u64 = 1;
 pub const IB_IOCTL_UNREG_AGENT: u64 = 2;
 pub const IB_IOCTL_EN_PKEY: u8 = 3;
+pub const IB_IOCTL_REG_AGENT2: u64 = 4;
+
 
 #[derive(Debug, Clone)]
 #[repr(C)]
@@ -23,7 +25,7 @@ pub struct ib_user_mad_reg_req {
 #[allow(non_camel_case_types)]
 pub struct ib_user_mad_reg_req2 {
     pub id: u32,
-    pub qpn: u8,
+    pub qpn: u32,
     pub mgmt_class: u8,
     pub mgmt_class_version: u8,
     pub res: u16,
@@ -35,7 +37,7 @@ pub struct ib_user_mad_reg_req2 {
 }
 
 
-ioctl_readwrite!(ib_register_agent, IB_IOCTL_MAGIC, IB_IOCTL_REG_AGENT, ib_user_mad_reg_req);
-ioctl_readwrite!(ib_register_agent2, IB_IOCTL_MAGIC, IB_IOCTL_REG_AGENT, ib_user_mad_reg_req2);
-ioctl_write_int!(ib_unregister_agent, IB_IOCTL_MAGIC, IB_IOCTL_UNREG_AGENT);
-ioctl_none!(ib_enable_pkey, IB_IOCTL_MAGIC, IB_IOCTL_EN_PKEY);
+ioctl_readwrite!(ib_user_mad_register_agent, IB_IOCTL_MAGIC, IB_IOCTL_REG_AGENT, ib_user_mad_reg_req);
+ioctl_readwrite!(ib_user_mad_register_agent2, IB_IOCTL_MAGIC, IB_IOCTL_REG_AGENT2, ib_user_mad_reg_req2);
+ioctl_write_int!(ib_user_mad_unregister_agent, IB_IOCTL_MAGIC, IB_IOCTL_UNREG_AGENT);
+ioctl_none!(ib_user_mad_enable_pkey, IB_IOCTL_MAGIC, IB_IOCTL_EN_PKEY);
