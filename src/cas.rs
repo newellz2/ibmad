@@ -22,13 +22,12 @@ pub enum IbPortPhyState {
 #[derive(Debug)]
 pub enum IbPortLinkLayerState {
     Unknown = -1,
-    Sleep = 1,
-    Polling = 2,
-    Disabled = 3,
-    PortConfigurationTraining = 4,
-    LinkUp = 5,
-    LinkErrorRecovery = 6,
-    PhyTest = 7,
+    Nop = 0,
+    Down= 1,
+    Init = 3,
+    Armed = 4,
+    Active = 5,
+    ActiveDeferred = 6,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -212,7 +211,12 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbPort>, io::Error>
                             if let Ok(data) = fs::read_to_string(state_path) {
                                 let state_str = data.trim();
                                 match state_str.split(':').next().unwrap_or("-1") {
-                                    "5" => port.state = IbPortLinkLayerState::LinkUp,
+                                    "0" => port.state = IbPortLinkLayerState::Nop,
+                                    "1" => port.state = IbPortLinkLayerState::Down,
+                                    "2" => port.state = IbPortLinkLayerState::Init,
+                                    "3" => port.state = IbPortLinkLayerState::Armed,
+                                    "4" => port.state = IbPortLinkLayerState::Active,
+                                    "5" => port.state = IbPortLinkLayerState::ActiveDeferred,
                                     _ => port.state = IbPortLinkLayerState::Unknown,
                                 }
                             }
@@ -305,11 +309,6 @@ pub fn get_cas() -> Result<Vec<IbCa>, std::io::Error> {
                         let entry = entry?;
                         let file_name = entry.file_name().into_string().unwrap();
                         log::trace!("get_cas - Found entry, path={:?} filename={}", entry.path(), file_name);
-
-                        let ib_ca = IbCa {
-                            name: file_name,
-                            ports: Vec::new(),
-                        };
                         let r = get_ib_ports_info(&entry.path());
 
                         log::trace!("get_cas - get_ib_ports_info result:{:?}", r);
