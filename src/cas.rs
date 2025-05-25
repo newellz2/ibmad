@@ -1,4 +1,5 @@
 
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path;
@@ -19,9 +20,51 @@ pub enum IbPortPhyState {
 }
 
 #[derive(Debug)]
+pub enum IbPortLinkLayerState {
+    Unknown = -1,
+    Sleep = 1,
+    Polling = 2,
+    Disabled = 3,
+    PortConfigurationTraining = 4,
+    LinkUp = 5,
+    LinkErrorRecovery = 6,
+    PhyTest = 7,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct IbPortCounters {
+    // Using u64 as counters are typically large unsigned integers
+    // Using Option as some counters might not be present
+    pub port_xmit_data: Option<u64>,
+    pub port_rcv_data: Option<u64>,
+    pub port_xmit_packets: Option<u64>,
+    pub port_rcv_packets: Option<u64>,
+    // Add other common counters
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct IbPortHwCounters {
+    // Similar to IbPortCounters, specific counter names would be needed
+    // For now, let's assume a couple of examples
+    pub hw_verrors: Option<u64>,
+    pub hw_recv_errors: Option<u64>,
+    // Add other common HW counters
+}
+
+
+#[derive(Debug)]
 pub struct IbPort {
-    number: u32,
-    phy_state: IbPortPhyState,
+    pub number: u32,
+    pub phy_state: IbPortPhyState,
+    pub link_layer: Option<String>,
+    pub rate: Option<String>,
+    pub sm_lid: u32,
+    pub sm_sl: u8,
+    pub state: IbPortLinkLayerState,
+    pub lid: u32,
+    pub counters: Option<HashMap<String,u64>>,
+    pub hw_counters: Option<HashMap<String,u64>>,
+    pub pkeys: Vec<u64>,
 }
 
 #[derive(Debug)]
@@ -86,6 +129,15 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbPort>, io::Error>
                         let mut port = IbPort{
                             number: 0,
                             phy_state: IbPortPhyState::Unknown,
+                            link_layer: None,
+                            rate: None,
+                            sm_lid: 0,
+                            sm_sl: 0,
+                            state: IbPortLinkLayerState::Unknown,
+                            lid: 0,
+                            counters: None,
+                            hw_counters: None,
+                            pkeys: Vec::new(),
                         };
 
                         let entry = entry?;
