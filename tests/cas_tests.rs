@@ -1,43 +1,16 @@
 #[cfg(test)]
-mod ioctl_tests {
-    use std::{fmt::format, mem::MaybeUninit};
-
-
-    #[test]
-    fn ib_enable_pkey_success() {
-        
-        match std::fs::File::options().read(true).write(true).open("/dev/infiniband/umad0") {
-            Ok(file) => {
-                let fd = std::os::fd::AsRawFd::as_raw_fd(&file);
-
-                // Enable PKeys
-                let r = unsafe {
-                    ibmad::ib_user_mad_enable_pkey(fd)
-                };
-
-                match r {
-                    Ok(i) => {
-                        assert!(i > -1, "PKey enabled")
-                    }
-                    Err(_) =>{
-                        assert!(false, "Failed to enable Pkeys")
-                    }
-                }
-            }
-            Err(_) => {
-                //Failed
-            }
-
-        }
-    }
+mod cas_tests {
 
     #[test]
     fn get_cas_names_success() {
-        match  ibmad::get_cas_names(){
+
+        let _ = env_logger::try_init();
+
+        match  ibmad::cas::get_cas_names(){
             Ok(cas) =>{
                 assert!( cas.len() > 0, "No CAs found.");
-                for ca in cas.iter(){
-                    println!("{}", ca);
+                for _ca in cas.iter(){
+                    // 
                 }
             }
             Err(e) => {
@@ -46,5 +19,18 @@ mod ioctl_tests {
         }
     }
 
+    #[test]
+    fn get_cas_success() {
+        
+        let _ = env_logger::try_init();
 
+        match  ibmad::cas::get_cas(){
+            Ok(cas) =>{
+                assert!(cas.len() > 0, "No CAs found.");
+            }
+            Err(e) => {
+                assert!(false, "{}", format!("Error finding CAs: {:?}", e));
+            }
+        }
+    }
 }
