@@ -158,22 +158,116 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbPort>, io::Error>
                         let phy_state_path = entry.path().join("phys_state");
                         log::trace!("get_ib_ports_info - Path: {:?}, phys_state Path: '{:?}'", entry.path(), phy_state_path);
 
-                        let data  = fs::read(phy_state_path)?;
+                        let data = fs::read(phy_state_path)?;
                         let phy_state_str = String::from_utf8_lossy(&data);
                         let phy_state_str = phy_state_str.trim();
 
-                        log::trace!("get_ib_ports_info - Path: {:?}, PhyState File Value: '{}'", entry.path(), phy_state_str.trim());
+                        log::trace!("get_ib_ports_info - Path: {:?}, PhyState File Value: '{}'", entry.path(), phy_state_str);
 
                         match phy_state_str.split(':').next().unwrap_or("-1") {
                             "5" => {
-                                log::trace!("get_ib_ports_info - Port '{}', has LinkUp state.", phy_state_str);
-                                port.phy_state = IbPortPhyState::LinkUp;    
+                                log::trace!("get_ib_ports_info - Port '{}' has LinkUp state.", phy_state_str);
+                                port.phy_state = IbPortPhyState::LinkUp;
                             }
                             _ => {
-                                log::trace!("get_ib_ports_info - Port '{}', has unkown state.",phy_state_str);
+                                log::trace!("get_ib_ports_info - Port '{}' has unknown state.", phy_state_str);
                                 port.phy_state = IbPortPhyState::Unknown;
                             }
+                        }
 
+                        let link_layer_path = entry.path().join("link_layer");
+                        if link_layer_path.exists() {
+                            if let Ok(data) = fs::read_to_string(link_layer_path) {
+                                port.link_layer = Some(data.trim().to_string());
+                            }
+                        }
+
+                        let rate_path = entry.path().join("rate");
+                        if rate_path.exists() {
+                            if let Ok(data) = fs::read_to_string(rate_path) {
+                                port.rate = Some(data.trim().to_string());
+                            }
+                        }
+
+                        let sm_lid_path = entry.path().join("sm_lid");
+                        if sm_lid_path.exists() {
+                            if let Ok(data) = fs::read_to_string(sm_lid_path) {
+                                if let Ok(v) = data.trim().parse::<u32>() {
+                                    port.sm_lid = v;
+                                }
+                            }
+                        }
+
+                        let sm_sl_path = entry.path().join("sm_sl");
+                        if sm_sl_path.exists() {
+                            if let Ok(data) = fs::read_to_string(sm_sl_path) {
+                                if let Ok(v) = data.trim().parse::<u8>() {
+                                    port.sm_sl = v;
+                                }
+                            }
+                        }
+
+                        let state_path = entry.path().join("state");
+                        if state_path.exists() {
+                            if let Ok(data) = fs::read_to_string(state_path) {
+                                let state_str = data.trim();
+                                match state_str.split(':').next().unwrap_or("-1") {
+                                    "5" => port.state = IbPortLinkLayerState::LinkUp,
+                                    _ => port.state = IbPortLinkLayerState::Unknown,
+                                }
+                            }
+                        }
+
+                        let lid_path = entry.path().join("lid");
+                        if lid_path.exists() {
+                            if let Ok(data) = fs::read_to_string(lid_path) {
+                                if let Ok(v) = data.trim().parse::<u32>() {
+                                    port.lid = v;
+                                }
+                            }
+                        }
+
+                        let counters_path = entry.path().join("counters");
+                        if counters_path.exists() {
+                            let mut counters = HashMap::new();
+                            for ctr_entry in fs::read_dir(counters_path)? {
+                                let ctr_entry = ctr_entry?;
+                                let name = ctr_entry.file_name().into_string().unwrap();
+                                if let Ok(data) = fs::read_to_string(ctr_entry.path()) {
+                                    if let Ok(v) = data.trim().parse::<u64>() {
+                                        counters.insert(name, v);
+                                    }
+                                }
+                            }
+                            port.counters = Some(counters);
+                        }
+
+                        let hw_counters_path = entry.path().join("hw_counters");
+                        if hw_counters_path.exists() {
+                            let mut hw_counters = HashMap::new();
+                            for ctr_entry in fs::read_dir(hw_counters_path)? {
+                                let ctr_entry = ctr_entry?;
+                                let name = ctr_entry.file_name().into_string().unwrap();
+                                if let Ok(data) = fs::read_to_string(ctr_entry.path()) {
+                                    if let Ok(v) = data.trim().parse::<u64>() {
+                                        hw_counters.insert(name, v);
+                                    }
+                                }
+                            }
+                            port.hw_counters = Some(hw_counters);
+                        }
+
+                        let pkeys_path = entry.path().join("pkeys");
+                        if pkeys_path.exists() {
+                            for pk_entry in fs::read_dir(pkeys_path)? {
+                                let pk_entry = pk_entry?;
+                                if let Ok(data) = fs::read_to_string(pk_entry.path()) {
+                                    let val_str = data.trim().trim_start_matches("0x");
+                                    if let Ok(v) = u64::from_str_radix(val_str, 16).or_else(|_| val_str.parse::<u64>()) {
+                                        port.pkeys.push(v);
+                                    }
+                                }
+                            }
                         }
 
                         log::trace!("get_ib_ports_info - Adding port to return vec: {:?}", port);
@@ -220,8 +314,14 @@ pub fn get_cas() -> Result<Vec<IbCa>, std::io::Error> {
 
                         log::trace!("get_cas - get_ib_ports_info result:{:?}", r);
 
-                        log::trace!("get_cas - adding ca to return vec: {:?}", ib_ca);
-                        cas.push(ib_ca);
+                        if let Ok(ports) = r {
+                            let ib_ca = IbCa {
+                                name: file_name,
+                                ports,
+                            };
+                            log::trace!("get_cas - adding ca to return vec: {:?}", ib_ca);
+                            cas.push(ib_ca);
+                        }
                     }
                 }
                 false => {
