@@ -34,41 +34,6 @@ mod mad_tests {
     }
 
     #[test]
-    fn register_agent_success() {
-
-        let _ = env_logger::try_init();
-
-        if !Path::new("/dev/infiniband/umad0").exists() {
-            eprintln!("UMAD device not found, skipping test");
-            return;
-        }
-
-        match  ibmad::cas::get_cas(){
-            Ok(cas) =>{
-                assert!(cas.len() > 0, "No CAs found.");
-                let hca = &cas[0];
-                match open_port(hca) {
-                    Ok(mut port) => {
-                        log::debug!("register_agent_success - Opened IB MAD Port: {:?}", port);
-<<<<<<< HEAD
-                        register_agent(&mut port, ibmad::mad::IB_MGMT_CLASS_PERFORMANCE);
-=======
-                        let r = register_agent(&mut port, ibmad::IB_PERFORMANCE_MGMT_CLASS);
-                        assert!(r.is_ok(), "Failed to register agent: {:?}", r);
->>>>>>> refs/remotes/origin/main
-                    },
-                    Err(e) => {
-                        assert!(false, "{}", format!("Error opening port: {:?}", e));
-                    },
-                }
-            }
-            Err(e) => {
-                assert!(false, "{}", format!("Error finding CAs: {:?}", e));
-            }
-        }
-    }
-
-    #[test]
     fn send_success() {
 
         let _ = env_logger::try_init();

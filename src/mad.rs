@@ -154,7 +154,7 @@ pub fn register_agent(port: &mut IbMadPort, mgmt_class: u8) -> Result<u32, io::E
 
     let fd = port.file.as_raw_fd();
 
-    // Register agent
+    // Register agent IOCTL call
     let r = unsafe { 
         ib_user_mad_register_agent(fd, req_ptr)
     };
