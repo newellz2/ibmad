@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod mad_io_tests {
-    use std::{fs, io::{Read, Seek, SeekFrom}};
+    use std::{fs, io::{Read, Seek, SeekFrom, Write}};
 
     use nix::sys::memfd::{memfd_create, MFdFlags};
 
@@ -38,7 +38,7 @@ mod mad_io_tests {
             status: 0,
             hop_ptr: 0,
             hop_cnt: 1,
-            tid: (0x11 as u64).to_be(),
+            tid: (0x11 as u64).to_be(), // NodeDesc
             attr_id: (0x0010 as u16).to_be(),
             additional_status: 0,
             attr_mod: 0,
@@ -134,12 +134,12 @@ mod mad_io_tests {
         };
         port.file.write_all(bytes).unwrap();
 
-        // modify a portion of the attr_layout in the underlying file
-        const ATTR_BYTES: [u8; 4] = [0xaa, 0xbb, 0xcc, 0xdd];
-        let attr_offset = std::mem::size_of::<u32>() * 5
-            + std::mem::size_of::<ib_mad_addr>()
-            + (std::mem::size_of::<ib_mad>() - std::mem::size_of::<[u8; 232]>())
-            + 40;
+        // Make the NodeDesc 'switch'
+        const ATTR_BYTES: [u8; 6] = [0x73, 0x77, 0x69, 0x74, 0x63, 0x68]; // switch
+        let attr_offset = std::mem::size_of::<u32>() * 5 // 20 bytes
+            + std::mem::size_of::<ib_mad_addr>() // 44 bytes
+            + (std::mem::size_of::<ibmad::mad::ib_mad>() - std::mem::size_of::<[u8; 232]>()) // 24 bytes
+            + 40; // 20+44+24+40 = 128 byte offset
         port.file
             .seek(SeekFrom::Start(attr_offset as u64))
             .unwrap();
@@ -155,6 +155,11 @@ mod mad_io_tests {
         let dr: &ibmad::mad::dr_smp_mad = unsafe {
             &*(recv_umad.data[24..].as_ptr() as *const ibmad::mad::dr_smp_mad)
         };
+
+        let node_desc_bytes = &dr.attr_layout[..ATTR_BYTES.len()];
+        let node_desc = String::from_utf8_lossy(node_desc_bytes);
+
+        log::debug!("recv_reads_modified_mad - Read NodeDesc: '{}'", node_desc);
         assert_eq!(&dr.attr_layout[..ATTR_BYTES.len()], &ATTR_BYTES);
     }
 
