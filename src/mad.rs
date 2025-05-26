@@ -6,6 +6,11 @@ use crate::{dump_bytes, ib_user_mad_register_agent};
 use crate::{cas::IbCa, ib_user_mad_enable_pkey, ib_user_mad_reg_req};
 
 
+pub const IB_MGMT_CLASS_PERFORMANCE: u8 = 0x4;
+pub const IB_MGMT_CLASS_LID_ROUTED_SMP: u8 = 0x1;
+pub const IB_MGMT_CLASS_DIRECT_ROUTED_SMP: u8 = 0x81;
+
+
 #[derive(Debug, Copy, Clone)]
 #[repr(C, packed)]
 #[allow(non_camel_case_types)]
@@ -175,8 +180,8 @@ pub fn send(port: &mut IbMadPort) {
         class_version: 0x1,
         method: (0x1 as u8).to_be(),
         status: 0x0,
-        hop_ptr: 0x0,
-        hop_cnt: (0x00 as u8).to_be(),
+        hop_ptr: 0x00,
+        hop_cnt: (0x02 as u8).to_be(),
         tid: (0x11 as u64).to_be(),
         attr_id: (0x0010 as u16).to_be(),
         additional_status: 0x0000,
@@ -203,7 +208,7 @@ pub fn send(port: &mut IbMadPort) {
         addr: ib_mad_addr { 
             qpn: 0, 
             qkey: (0x80010000 as u32).to_be(), 
-            lid: 0, 
+            lid: 0xffff, 
             sl: 0, 
             path_bits: 0, 
             grh_present: 0, 
@@ -220,8 +225,9 @@ pub fn send(port: &mut IbMadPort) {
 
     dr_mad.initial_path[0] = 0;
     dr_mad.initial_path[1] = 1;
+    dr_mad.initial_path[2] = 3;
 
-    dr_mad.initial_path.reverse();
+    //dr_mad.initial_path.reverse();
 
     let dr_ptr = &mut dr_mad as *mut dr_smp_mad as *mut u8;
 
@@ -256,6 +262,7 @@ pub fn send(port: &mut IbMadPort) {
         }
     }
 
+    println!("");
     let r  = port.file.read(&mut mad_bytes);
     match r {
         Ok(rc) => {

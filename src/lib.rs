@@ -1,7 +1,5 @@
 use nix::{ioctl_none, ioctl_readwrite, ioctl_write_int};
 
-pub const IB_PERFORMANCE_MGMT_CLASS: u8 = 0x4;
-
 pub const IB_IOCTL_MAGIC: u8 = 0x1b as u8;
 pub const IB_IOCTL_REG_AGENT: u64 = 1;
 pub const IB_IOCTL_UNREG_AGENT: u64 = 2;

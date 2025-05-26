@@ -39,7 +39,7 @@ mod mad_tests {
                 match open_port(hca) {
                     Ok(mut port) => {
                         log::debug!("register_agent_success - Opened IB MAD Port: {:?}", port);
-                        register_agent(&mut port, ibmad::IB_PERFORMANCE_MGMT_CLASS);
+                        register_agent(&mut port, ibmad::mad::IB_MGMT_CLASS_PERFORMANCE);
                     },
                     Err(e) => {
                         assert!(false, "{}", format!("Error opening port: {:?}", e));
