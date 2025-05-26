@@ -1,11 +1,17 @@
 #[cfg(test)]
 mod ioctl_tests {
     use std::mem::MaybeUninit;
+    use std::path::Path;
 
 
     #[test]
     fn ib_enable_pkey_success() {
         
+        if !Path::new("/dev/infiniband/umad0").exists() {
+            eprintln!("UMAD device not found, skipping test");
+            return;
+        }
+
         match std::fs::File::options().read(true).write(true).open("/dev/infiniband/umad0") {
             Ok(file) => {
                 let fd = std::os::fd::AsRawFd::as_raw_fd(&file);
@@ -43,6 +49,11 @@ mod ioctl_tests {
             oui: unsafe { MaybeUninit::<[u8; 3]>::zeroed().assume_init() },
             rmpp_version: 0,
         };
+
+        if !Path::new("/dev/infiniband/umad0").exists() {
+            eprintln!("UMAD device not found, skipping test");
+            return;
+        }
 
         match std::fs::File::options().read(true).write(true).open("/dev/infiniband/umad0") {
             Ok(file) => {
@@ -100,6 +111,11 @@ mod ioctl_tests {
             rmpp_version: 0,
             reserved: unsafe { MaybeUninit::<[u8; 3]>::zeroed().assume_init() },
         };
+
+        if !Path::new("/dev/infiniband/umad0").exists() {
+            eprintln!("UMAD device not found, skipping test");
+            return;
+        }
 
         match std::fs::File::options().read(true).write(true).open("/dev/infiniband/umad0") {
             Ok(file) => {
