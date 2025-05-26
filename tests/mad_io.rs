@@ -88,6 +88,46 @@ mod mad_io_tests {
         umad
     }
 
+    fn write_status(port: &mut IbMadPort, status: u16) {
+        let status_offset = std::mem::size_of::<u32>() * 5
+            + std::mem::size_of::<ib_mad_addr>()
+            + 4;
+        port.file
+            .seek(SeekFrom::Start(status_offset as u64))
+            .unwrap();
+
+        port.file.write_all(&status.to_be_bytes()).unwrap();
+    }
+
+    fn update_tid(port: &mut IbMadPort, mask: u64) {
+        let tid_offset = std::mem::size_of::<u32>() * 5
+            + std::mem::size_of::<ib_mad_addr>()
+            + 8;
+        port.file
+            .seek(SeekFrom::Start(tid_offset as u64))
+            .unwrap();
+
+        let mut tid_bytes: [u8; 8] = [0; 8];
+        port.file.read_exact(&mut tid_bytes).unwrap();
+        let tid = u64::from_be_bytes(tid_bytes) | mask;
+
+        port.file
+            .seek(SeekFrom::Start(tid_offset as u64))
+            .unwrap();
+        port.file.write_all(&tid.to_be_bytes()).unwrap();
+    }
+
+    fn write_node_desc(port: &mut IbMadPort, desc: &[u8]) {
+        let attr_offset = std::mem::size_of::<u32>() * 5
+            + std::mem::size_of::<ib_mad_addr>()
+            + (std::mem::size_of::<ibmad::mad::ib_mad>() - std::mem::size_of::<[u8; 232]>())
+            + 40;
+        port.file
+            .seek(SeekFrom::Start(attr_offset as u64))
+            .unwrap();
+        port.file.write_all(desc).unwrap();
+    }
+
     #[test]
     fn send_writes_to_memfd() {
 
@@ -134,54 +174,12 @@ mod mad_io_tests {
         };
         port.file.write_all(bytes).unwrap();
 
-        // Modify the status, u16
-        let status_offset = std::mem::size_of::<u32>() * 5 // 20 bytes
-            + std::mem::size_of::<ib_mad_addr>() // 44 bytes
-            + 4; // 20+44+8 = 72 byte offset
+        // Modify the status, TID and NodeDesc
+        write_status(&mut port, 0x04);
+        update_tid(&mut port, 0xfefe_fefe_0000_0000);
 
-        port.file
-            .seek(SeekFrom::Start(status_offset as u64))
-            .unwrap();
-
-        let mut status_bytes: [u8; 2] = (0x04 as u16).to_be_bytes();
-        let _ = port.file.write(&mut status_bytes).unwrap();
-
-        // Modify the TID, u64
-        let tid_offset = std::mem::size_of::<u32>() * 5 // 20 bytes
-            + std::mem::size_of::<ib_mad_addr>() // 44 bytes
-            + 8; // 20+44+8 = 72 byte offset
-        
-        port.file
-            .seek(SeekFrom::Start(tid_offset as u64))
-            .unwrap();
-
-        let mut tid_bytes: [u8; 8] = [0; 8];
-        let _ = port.file.read_exact(&mut tid_bytes).unwrap();
-        let tid = u64::from_be_bytes(tid_bytes);
-
-        log::debug!("recv_reads_modified_mad - TID: 0x{:x}, TID bytes: {:?} ", tid, tid_bytes);
-
-        let tid = tid | 0xfefe_fefe_0000_0000;
-        port.file
-            .seek(SeekFrom::Start(tid_offset as u64))
-            .unwrap();
-
-        log::debug!("recv_reads_modified_mad - New TID: 0x{:x}", tid);
-
-        let _ = port.file.write(&tid.to_be_bytes());
-
-        // Set the NodeDesc to 'switch'
-        const ATTR_BYTES: [u8; 6] = [0x73, 0x77, 0x69, 0x74, 0x63, 0x68]; // switch
-        let attr_offset = std::mem::size_of::<u32>() * 5 // 20 bytes
-            + std::mem::size_of::<ib_mad_addr>() // 44 bytes
-            + (std::mem::size_of::<ibmad::mad::ib_mad>() - std::mem::size_of::<[u8; 232]>()) // 24 bytes
-            + 40; // 20+44+24+40 = 128 byte offset
-        
-        port.file
-            .seek(SeekFrom::Start(attr_offset as u64))
-            .unwrap();
-
-        port.file.write_all(&ATTR_BYTES).unwrap();
+        const ATTR_BYTES: [u8; 6] = [0x73, 0x77, 0x69, 0x74, 0x63, 0x68];
+        write_node_desc(&mut port, &ATTR_BYTES);
 
         // rewind for reading
         port.file.seek(SeekFrom::Start(0)).unwrap();
