@@ -7,6 +7,14 @@ use std::path::PathBuf;
 
 use log;
 
+const HCA_UMAD_SYS_PATH: &str = "device/infiniband_mad";
+const HCA_UMAD_DEV_PATH: &str = "/dev/infiniband";
+const HCA_PROPERTIES: [&str; 8] =  [
+    "board_id", "fw_ver", "hca_type", 
+    "hw_rev","node_desc", "node_guid", 
+    "node_type", "sys_image_guid"
+];
+
 #[derive(Debug)]
 pub enum IbPortPhyState {
     Unknown = -1,
@@ -30,29 +38,8 @@ pub enum IbPortLinkLayerState {
     ActiveDeferred = 6,
 }
 
-#[derive(Debug, Default, Clone)]
-pub struct IbPortCounters {
-    // Using u64 as counters are typically large unsigned integers
-    // Using Option as some counters might not be present
-    pub port_xmit_data: Option<u64>,
-    pub port_rcv_data: Option<u64>,
-    pub port_xmit_packets: Option<u64>,
-    pub port_rcv_packets: Option<u64>,
-    // Add other common counters
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct IbPortHwCounters {
-    // Similar to IbPortCounters, specific counter names would be needed
-    // For now, let's assume a couple of examples
-    pub hw_verrors: Option<u64>,
-    pub hw_recv_errors: Option<u64>,
-    // Add other common HW counters
-}
-
-
 #[derive(Debug)]
-pub struct IbPort {
+pub struct IbCaPort {
     pub number: u32,
     pub phy_state: IbPortPhyState,
     pub link_layer: Option<String>,
@@ -66,10 +53,26 @@ pub struct IbPort {
     pub pkeys: Vec<u64>,
 }
 
+
+#[derive(Debug)]
+pub struct IbCaDevPaths {
+    pub umad_dev_path: Option<PathBuf>,
+    pub issm_dev_path: Option<PathBuf>,
+}
+
 #[derive(Debug)]
 pub struct IbCa {
-    name: String,
-    ports: Vec<IbPort>,
+    pub name: String,
+    pub ports: Vec<IbCaPort>,
+    pub board_id: Option<String>,
+    pub fw_ver: Option<String>,
+    pub hca_type: Option<String>,
+    pub hw_rev: Option<String>,
+    pub node_desc: Option<String>,
+    pub node_guid: Option<String>,
+    pub node_type: Option<String>,
+    pub sys_image_guid: Option<String>,
+    pub dev_paths: Option<IbCaDevPaths>,
 }
 
 pub fn get_cas_names() -> Result<Vec<String>, std::io::Error> {
@@ -92,7 +95,7 @@ pub fn get_cas_names() -> Result<Vec<String>, std::io::Error> {
                     }
                 }
                 false => {
-                    log:: error!("Directory '{}' does not exist", crate::SYS_INFINIBAND);
+                    log::debug!("Directory '{}' does not exist", crate::SYS_INFINIBAND);
                     let err = std::io::Error::new(
                         io::ErrorKind::NotFound, 
                         io::Error::other("Directory does not exist".to_string())
@@ -102,7 +105,7 @@ pub fn get_cas_names() -> Result<Vec<String>, std::io::Error> {
             }
         }
         Err(e) => {
-            log::error!("Error checking if {} exists: {}", crate::SYS_INFINIBAND, e);
+            log::debug!("Error checking if {} exists: {}", crate::SYS_INFINIBAND, e);
             let err = std::io::Error::new(io::ErrorKind::Other, e);
             return Err(err)
         }
@@ -112,9 +115,9 @@ pub fn get_cas_names() -> Result<Vec<String>, std::io::Error> {
     Ok(cas)
 }
 
-pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbPort>, io::Error> {
+pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbCaPort>, io::Error> {
 
-    let mut ports: Vec<IbPort> = Vec::new();
+    let mut ports: Vec<IbCaPort> = Vec::new();
 
     let ports_path = path.join(
         PathBuf::from("ports")
@@ -125,7 +128,7 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbPort>, io::Error>
             match r {
                 true => {
                     for entry in fs::read_dir(&ports_path)? {
-                        let mut port = IbPort{
+                        let mut port = IbCaPort{
                             number: 0,
                             phy_state: IbPortPhyState::Unknown,
                             link_layer: None,
@@ -285,7 +288,7 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbPort>, io::Error>
         }
 
         Err(e) => {
-            log::error!("get_ib_ports_info - Error checking if {} exists: {}", crate::SYS_INFINIBAND, e);
+            log::debug!("get_ib_ports_info - Error checking if {} exists: {}", crate::SYS_INFINIBAND, e);
             let err = std::io::Error::new(io::ErrorKind::Other, e);
             return Err(err)
         }
@@ -293,6 +296,50 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbPort>, io::Error>
 
     Ok(ports)
     
+}
+
+pub fn get_ca_dev_paths(path: &path::PathBuf) -> Option<IbCaDevPaths> {
+    let mut ib_ca_dev_paths = IbCaDevPaths {
+        umad_dev_path: None,
+        issm_dev_path: None,
+    };
+
+    let sys_path = path.join(HCA_UMAD_SYS_PATH);
+
+    log::debug!("get_ca_dev_paths - Checking sys path {:?}", sys_path);
+    match sys_path.exists() {
+        true =>{
+            for entry in fs::read_dir(sys_path).ok()? {
+                let entry = entry.ok()?;
+                match entry.file_name().to_str() {
+                    Some(file_name) => {
+                        let file_path = path::PathBuf::from(HCA_UMAD_DEV_PATH).join(file_name);
+                        log::debug!("get_ca_dev_paths - Checking for device path '{:?}'", file_path);
+                        if file_name.starts_with("umad") {
+                            if file_path.exists() {
+                                log::debug!("get_ca_dev_paths - Found device path '{:?}'", file_path);
+                                ib_ca_dev_paths.umad_dev_path = Some(file_path);
+                            }
+
+                        } else if file_name.starts_with("issm") {
+                            if file_path.exists() {
+                                log::debug!("get_ca_dev_paths - Found device path '{:?}'", file_path);
+                                ib_ca_dev_paths.issm_dev_path = Some(file_path);
+                            }
+
+                        }
+                    }
+                    _ => {}, // Do Nothing
+
+                }
+
+            }
+        },
+        false => {
+            log::debug!("get_ca_dev_paths - sys path '{:?}' does not exist.", sys_path);
+        },
+    }
+    Some(ib_ca_dev_paths)
 }
 
 pub fn get_cas() -> Result<Vec<IbCa>, std::io::Error> {
@@ -308,23 +355,54 @@ pub fn get_cas() -> Result<Vec<IbCa>, std::io::Error> {
                     for entry in fs::read_dir(crate::SYS_INFINIBAND)? {
                         let entry = entry?;
                         let file_name = entry.file_name().into_string().unwrap();
-                        log::trace!("get_cas - Found entry, path={:?} filename={}", entry.path(), file_name);
-                        let r = get_ib_ports_info(&entry.path());
 
+                        log::trace!("get_cas - Found entry, path={:?} filename={}", entry.path(), file_name);
+
+                        let r = get_ib_ports_info(&entry.path());
                         log::trace!("get_cas - get_ib_ports_info result:{:?}", r);
 
                         if let Ok(ports) = r {
-                            let ib_ca = IbCa {
+                            let mut ib_ca = IbCa {
                                 name: file_name,
+                                board_id: None,
+                                fw_ver: None,
+                                hca_type: None,
+                                hw_rev: None,
+                                node_desc: None,
+                                node_guid: None,
+                                node_type: None,
+                                sys_image_guid: None,
+                                dev_paths: get_ca_dev_paths(&entry.path()),
                                 ports,
                             };
+
+                            for prop in HCA_PROPERTIES.iter() {
+                                let hca_prop_path = entry.path().join(prop);
+                                let file_path = entry.path().join(hca_prop_path);
+                                if file_path.exists() {
+                                    if let Ok(data) = fs::read_to_string(&file_path) {
+                                        match prop {
+                                            &"board_id" => ib_ca.board_id = Some(data.trim().to_owned()),
+                                            &"hca_type" => ib_ca.hca_type = Some(data.trim().to_owned()),
+                                            &"fw_ver" => ib_ca.fw_ver = Some(data.trim().to_owned()),
+                                            &"hw_rev" => ib_ca.hw_rev = Some(data.trim().to_owned()),
+                                            &"node_guid" => ib_ca.node_guid = Some(data.trim().to_owned()),
+                                            &"node_type" => ib_ca.node_type = Some(data.trim().to_owned()),
+                                            &"sys_image_guid" => ib_ca.sys_image_guid = Some(data.trim().to_owned()),
+                                            &"node_desc" => ib_ca.node_desc = Some(data.trim().to_owned()),
+                                            _ => {}, //Do Nothing
+                                        }
+                                    }
+                                }
+                            }
+
                             log::trace!("get_cas - adding ca to return vec: {:?}", ib_ca);
                             cas.push(ib_ca);
                         }
                     }
                 }
                 false => {
-                    log:: error!("Directory '{}' does not exist", crate::SYS_INFINIBAND);
+                    log::debug!("Directory '{}' does not exist", crate::SYS_INFINIBAND);
                     let err = std::io::Error::new(
                         io::ErrorKind::NotFound, 
                         io::Error::other("Directory does not exist".to_string())
@@ -334,7 +412,7 @@ pub fn get_cas() -> Result<Vec<IbCa>, std::io::Error> {
             }
         }
         Err(e) => {
-            log::error!("Error checking if {} exists: {}", crate::SYS_INFINIBAND, e);
+            log::debug!("Error checking if {} exists: {}", crate::SYS_INFINIBAND, e);
             let err = std::io::Error::new(io::ErrorKind::Other, e);
             return Err(err)
         }

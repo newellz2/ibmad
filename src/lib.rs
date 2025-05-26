@@ -1,5 +1,7 @@
 use nix::{ioctl_none, ioctl_readwrite, ioctl_write_int};
 
+pub const IB_PERFORMANCE_MGMT_CLASS: u8 = 0x4;
+
 pub const IB_IOCTL_MAGIC: u8 = 0x1b as u8;
 pub const IB_IOCTL_REG_AGENT: u64 = 1;
 pub const IB_IOCTL_UNREG_AGENT: u64 = 2;
@@ -9,6 +11,8 @@ pub const IB_IOCTL_REG_AGENT2: u64 = 4;
 pub const SYS_INFINIBAND: &str = "/sys/class/infiniband";
 
 pub mod cas;
+pub mod mad;
+
 
 #[derive(Debug, Clone)]
 #[repr(C)]
@@ -43,3 +47,20 @@ ioctl_readwrite!(ib_user_mad_register_agent, IB_IOCTL_MAGIC, IB_IOCTL_REG_AGENT,
 ioctl_readwrite!(ib_user_mad_register_agent2, IB_IOCTL_MAGIC, IB_IOCTL_REG_AGENT2, ib_user_mad_reg_req2);
 ioctl_write_int!(ib_user_mad_unregister_agent, IB_IOCTL_MAGIC, IB_IOCTL_UNREG_AGENT);
 ioctl_none!(ib_user_mad_enable_pkey, IB_IOCTL_MAGIC, IB_IOCTL_EN_PKEY);
+
+fn dump_bytes(buf: &[u8]) {
+    print!("0x0000: ");
+    let len = buf.len();
+    for (i, &byte) in buf.iter().enumerate() {
+        print!("{:02x} ", byte);
+        if (i + 1) % 8 == 0{
+            print!(" ");
+        }
+        if (i + 1) % 16 == 0 { 
+            println!(); // Add a newline after every 8 bytes
+            if i < len - 1 {
+                print!("0x{:04x}: ", i);
+            }
+        }
+    }
+}
