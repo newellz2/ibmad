@@ -12,7 +12,7 @@ mod mad_io_tests {
         IbMadPort { file }
     }
 
-    fn sample_umad(agent_id: u32) -> ib_user_mad {
+    fn sample_umad_attr(agent_id: u32, attr_id: u16) -> ib_user_mad {
         use ibmad::mad::{dr_smp_mad, ib_mad};
 
         // build DR SMP MAD content
@@ -39,7 +39,7 @@ mod mad_io_tests {
             hop_ptr: 0,
             hop_cnt: 1,
             tid: (0x1337 as u64).to_be(),
-            attr_id: (0x0010 as u16).to_be(),  // NodeDesc
+            attr_id: (attr_id as u16).to_be(),
             additional_status: 0,
             attr_mod: 0,
             data: [0; 232],
@@ -86,6 +86,10 @@ mod mad_io_tests {
         umad.data[..mad_bytes.len()].copy_from_slice(mad_bytes);
 
         umad
+    }
+
+    fn sample_umad(agent_id: u32) -> ib_user_mad {
+        sample_umad_attr(agent_id, 0x0010)
     }
 
     fn write_direction(port: &mut IbMadPort, direction: u8) {
@@ -145,6 +149,42 @@ mod mad_io_tests {
             .seek(SeekFrom::Start(attr_offset as u64))
             .unwrap();
         port.file.write_all(desc).unwrap();
+    }
+
+    #[repr(C, packed)]
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    struct NodeInfo {
+        base_version: u8,
+        class_version: u8,
+        node_type: u8,
+        nports: u8,
+        system_guid: u64,
+        node_guid: u64,
+        port_guid: u64,
+        partition_cap: u16,
+        device_id: u16,
+        revision: u32,
+        local_port: u8,
+        vendor_id: [u8; 3],
+        reserved: [u8; 24],
+    }
+
+    fn write_node_info(port: &mut IbMadPort, info: &NodeInfo) {
+        let attr_offset = std::mem::size_of::<u32>() * 5
+            + std::mem::size_of::<ib_mad_addr>()
+            + (std::mem::size_of::<ibmad::mad::ib_mad>() - std::mem::size_of::<[u8; 232]>())
+            + 40;
+
+        port.file
+            .seek(SeekFrom::Start(attr_offset as u64))
+            .unwrap();
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                info as *const NodeInfo as *const u8,
+                std::mem::size_of::<NodeInfo>(),
+            )
+        };
+        port.file.write_all(bytes).unwrap();
     }
 
     #[test]
@@ -277,6 +317,55 @@ mod mad_io_tests {
 
         log::debug!("recv_reads_modified_mad - Read NodeDesc: '{}'", node_desc);
 
+    }
+
+    #[test]
+    fn send_recv_nodeinfo_success() {
+
+        let _ = env_logger::try_init();
+
+        let mut port = create_memfd_port();
+        let send_mad = sample_umad_attr(0, 0x0011);
+
+        // send request
+        let res = ibmad::mad::send(&mut port, &send_mad).unwrap();
+        assert_eq!(res, std::mem::size_of::<ib_user_mad>());
+
+        // prepare response
+        port.file.seek(SeekFrom::Start(0)).unwrap();
+        write_direction(&mut port, 0x80);
+        write_status(&mut port, 0x04);
+        update_tid(&mut port, 0xfeed_beef_0000_0000);
+
+        let node_info = NodeInfo {
+            base_version: 1,
+            class_version: 1,
+            node_type: 2,
+            nports: 1,
+            system_guid: 0x0102_0304_0506_0708,
+            node_guid: 0x1111_2222_3333_4444,
+            port_guid: 0x5555_6666_7777_8888,
+            partition_cap: 0x12,
+            device_id: 0x3456,
+            revision: 0xdead_beef,
+            local_port: 1,
+            vendor_id: [0xaa, 0xbb, 0xcc],
+            reserved: [0; 24],
+        };
+        write_node_info(&mut port, &node_info);
+
+        port.file.seek(SeekFrom::Start(0)).unwrap();
+
+        let mut recv_umad = sample_umad_attr(0, 0x0011);
+        let res = ibmad::mad::recv(&mut port, &mut recv_umad).unwrap();
+        assert_eq!(res, std::mem::size_of::<ib_user_mad>());
+
+        let dr: &ibmad::mad::dr_smp_mad = unsafe {
+            &*(recv_umad.data[24..].as_ptr() as *const ibmad::mad::dr_smp_mad)
+        };
+        let recv_info: &NodeInfo = unsafe { &*(dr.attr_layout.as_ptr() as *const NodeInfo) };
+
+        assert_eq!(recv_info, &node_info);
     }
 
 }
