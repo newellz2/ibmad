@@ -14,7 +14,7 @@ pub const IB_MGMT_CLASS_DIRECT_ROUTED_SMP: u8 = 0x81;
 #[derive(Debug, Copy, Clone)]
 #[repr(C, packed)]
 #[allow(non_camel_case_types)]
-pub struct ib_dr_smp_mad {
+pub struct ib_mad {
 	pub base_version: u8,
 	pub mgmt_class: u8,
 	pub class_version: u8,
@@ -175,7 +175,7 @@ pub fn register_agent(port: &mut IbMadPort, mgmt_class: u8) -> Result<u32, io::E
 
 pub fn send(port: &mut IbMadPort) {
 
-    let mut mad = ib_dr_smp_mad{
+    let mut mad = ib_mad{
         base_version: 0x1,
         mgmt_class: (0x81 as u8).to_be(),
         class_version: 0x1,
@@ -190,7 +190,7 @@ pub fn send(port: &mut IbMadPort) {
         data: [0; 232],
     };
 
-    let mut dr_mad = dr_smp_mad {
+    let mut dr_smp_mad = dr_smp_mad {
         m_key: 0x0,
         drslid: 0xffff,
         drdlid: 0xffff,
@@ -200,7 +200,7 @@ pub fn send(port: &mut IbMadPort) {
         return_path: [0; 64],
     };
 
-    let mut smp_mad = ib_user_mad{
+    let mut umad = ib_user_mad{
         agent_id: 0,
         status: 0,
         timeout_ms: 100,
@@ -224,27 +224,27 @@ pub fn send(port: &mut IbMadPort) {
         data: [0; 256],
     };
 
-    dr_mad.initial_path[0] = 0;
-    dr_mad.initial_path[1] = 1;
-    dr_mad.initial_path[2] = 3;
+    dr_smp_mad.initial_path[0] = 0;
+    dr_smp_mad.initial_path[1] = 1;
+    dr_smp_mad.initial_path[2] = 3;
 
     //dr_mad.initial_path.reverse();
 
-    let dr_ptr = &mut dr_mad as *mut dr_smp_mad as *mut u8;
+    let dr_smp_ptr = &mut dr_smp_mad as *mut dr_smp_mad as *mut u8;
 
     unsafe {
-        std::ptr::copy_nonoverlapping(dr_ptr, mad.data.as_mut_ptr(), std::mem::size_of::<[u8; 232 as usize] >());
+        std::ptr::copy_nonoverlapping(dr_smp_ptr, mad.data.as_mut_ptr(), std::mem::size_of::<[u8; 232 as usize] >());
     };
 
-    let dr_smpt_ptr = &mut mad as *mut ib_dr_smp_mad as *mut u8;
+    let mad_ptr = &mut mad as *mut ib_mad as *mut u8;
 
     unsafe {
-        std::ptr::copy_nonoverlapping(dr_smpt_ptr, smp_mad.data.as_mut_ptr(), std::mem::size_of::<[u8; 256 as usize] >());
+        std::ptr::copy_nonoverlapping(mad_ptr, umad.data.as_mut_ptr(), std::mem::size_of::<[u8; 256 as usize] >());
     };
 
     let mut mad_bytes: &mut [u8] = unsafe {
         std::slice::from_raw_parts_mut(
-            &smp_mad as *const ib_user_mad as *mut u8,
+            &umad as *const ib_user_mad as *mut u8,
             std::mem::size_of::<ib_user_mad>(),
         )
     };
