@@ -134,7 +134,19 @@ mod mad_io_tests {
         };
         port.file.write_all(bytes).unwrap();
 
-        // Modify the TID
+        // Modify the status, u16
+        let status_offset = std::mem::size_of::<u32>() * 5 // 20 bytes
+            + std::mem::size_of::<ib_mad_addr>() // 44 bytes
+            + 4; // 20+44+8 = 72 byte offset
+
+        port.file
+            .seek(SeekFrom::Start(status_offset as u64))
+            .unwrap();
+
+        let mut status_bytes: [u8; 2] = (0x04 as u16).to_be_bytes();
+        let _ = port.file.write(&mut status_bytes).unwrap();
+
+        // Modify the TID, u64
         let tid_offset = std::mem::size_of::<u32>() * 5 // 20 bytes
             + std::mem::size_of::<ib_mad_addr>() // 44 bytes
             + 8; // 20+44+8 = 72 byte offset
