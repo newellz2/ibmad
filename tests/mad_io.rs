@@ -88,10 +88,28 @@ mod mad_io_tests {
         umad
     }
 
+    fn write_direction(port: &mut IbMadPort, direction: u8) {
+        let method_offset = std::mem::size_of::<u32>() * 5
+            + std::mem::size_of::<ib_mad_addr>()
+            + 2;
+        
+        port.file
+            .seek(SeekFrom::Start(method_offset as u64))
+            .unwrap();
+
+        let mut buf: [u8; 1] = [0x0];
+        let _ = port.file.read_exact(&mut buf);
+
+        buf[0] = buf[0] | direction;
+
+        port.file.write_all(&buf).unwrap();
+    }
+
     fn write_status(port: &mut IbMadPort, status: u16) {
         let status_offset = std::mem::size_of::<u32>() * 5
             + std::mem::size_of::<ib_mad_addr>()
             + 4;
+        
         port.file
             .seek(SeekFrom::Start(status_offset as u64))
             .unwrap();
@@ -103,6 +121,7 @@ mod mad_io_tests {
         let tid_offset = std::mem::size_of::<u32>() * 5
             + std::mem::size_of::<ib_mad_addr>()
             + 8;
+        
         port.file
             .seek(SeekFrom::Start(tid_offset as u64))
             .unwrap();
@@ -129,7 +148,7 @@ mod mad_io_tests {
     }
 
     #[test]
-    fn send_writes_to_memfd() {
+    fn send_writes_to_memfd_success() {
 
         let _ = env_logger::try_init();
 
@@ -158,7 +177,7 @@ mod mad_io_tests {
     }
 
     #[test]
-    fn recv_reads_modified_mad() {
+    fn recv_reads_modified_mad_success() {
 
         let _ = env_logger::try_init();
 
@@ -178,6 +197,7 @@ mod mad_io_tests {
         write_status(&mut port, 0x04);
         update_tid(&mut port, 0xfefe_fefe_0000_0000);
 
+        // NodeDesc == 'switch'
         const ATTR_BYTES: [u8; 6] = [0x73, 0x77, 0x69, 0x74, 0x63, 0x68];
         write_node_desc(&mut port, &ATTR_BYTES);
 
@@ -197,6 +217,66 @@ mod mad_io_tests {
 
         log::debug!("recv_reads_modified_mad - Read NodeDesc: '{}'", node_desc);
         assert_eq!(&dr.attr_layout[..ATTR_BYTES.len()], &ATTR_BYTES);
+    }
+
+    #[test]
+    fn send_recv_nodedesc_success() {
+
+        let _ = env_logger::try_init();
+
+        let mut port = create_memfd_port();
+        let send_mad = sample_umad(0);
+
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                &send_mad as *const ib_user_mad as *const u8,
+                std::mem::size_of::<ib_user_mad>(),
+            )
+        };
+
+        log::debug!("tests - send_recv_nodedesc_success - SendMAD:\n{}", ibmad::dump_bytes(bytes));
+
+        // send
+        let res = ibmad::mad::send(&mut port, &send_mad).unwrap();
+        assert_eq!(res, std::mem::size_of::<ib_user_mad>());
+
+        // rewind
+        port.file.seek(SeekFrom::Start(0)).unwrap();
+
+        write_direction(&mut port, 0x80);
+        write_status(&mut port, 0x04);
+        update_tid(&mut port, 0xdead_beef_0000_0000);
+
+        // NodeDesc == 'switch-test'
+        const ATTR_BYTES: [u8; 11] = [0x73, 0x77, 0x69, 0x74, 0x63, 0x68, 0x2d, 0x74, 0x65, 0x73, 0x74];
+        write_node_desc(&mut port, &ATTR_BYTES);
+
+        port.file.seek(SeekFrom::Start(0)).unwrap();
+
+        // recv
+        let mut recv_umad = sample_umad(0);
+        let res = ibmad::mad::recv(&mut port, &mut recv_umad).unwrap();
+
+        assert_eq!(res, std::mem::size_of::<ib_user_mad>());
+
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                &recv_umad as *const ib_user_mad as *const u8,
+                std::mem::size_of::<ib_user_mad>(),
+            )
+        };
+
+        log::debug!("tests - send_recv_nodedesc_success - RecvMAD:\n{}", ibmad::dump_bytes(bytes));
+
+        let dr: &ibmad::mad::dr_smp_mad = unsafe {
+            &*(recv_umad.data[24..].as_ptr() as *const ibmad::mad::dr_smp_mad)
+        };
+
+        let node_desc_bytes = &dr.attr_layout[..ATTR_BYTES.len()];
+        let node_desc = String::from_utf8_lossy(node_desc_bytes);
+
+        log::debug!("recv_reads_modified_mad - Read NodeDesc: '{}'", node_desc);
+
     }
 
 }
