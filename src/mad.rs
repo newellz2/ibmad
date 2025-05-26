@@ -139,7 +139,7 @@ pub fn open_port(hca: &IbCa) -> Result<IbMadPort, io::Error> {
     
 }
 
-pub fn register_agent(port: &mut IbMadPort, mgmt_class: u8) {
+pub fn register_agent(port: &mut IbMadPort, mgmt_class: u8) -> Result<u32, io::Error> {
     let mut req = ib_user_mad_reg_req {
         id: 0,
         method_mask: unsafe { MaybeUninit::<[u32; 4]>::zeroed().assume_init() },
@@ -161,12 +161,13 @@ pub fn register_agent(port: &mut IbMadPort, mgmt_class: u8) {
 
 
     match r {
-        Ok(rc) => {
-            log::debug!("register_agent - registed agent, rc: {}, agent_id: {}", rc, req.id);
-
+        Ok(_rc) => {
+            log::debug!("register_agent - registed agent, agent_id: {}", req.id);
+            Ok(req.id)
         }
         Err(e)=>{
             log::debug!("register_agent - Failed to register agent, errorno: {}", e);
+            Err(std::io::Error::new(io::ErrorKind::Other, e))
         }
     }
 }
