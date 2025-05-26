@@ -117,5 +117,46 @@ mod mad_io_tests {
 
     }
 
+    #[test]
+    fn recv_reads_modified_mad() {
+
+        let _ = env_logger::try_init();
+
+        let mut port = create_memfd_port();
+        let umad = sample_umad(2);
+
+        // write initial MAD bytes to the memfd
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                &umad as *const ib_user_mad as *const u8,
+                std::mem::size_of::<ib_user_mad>(),
+            )
+        };
+        port.file.write_all(bytes).unwrap();
+
+        // modify a portion of the attr_layout in the underlying file
+        const ATTR_BYTES: [u8; 4] = [0xaa, 0xbb, 0xcc, 0xdd];
+        let attr_offset = std::mem::size_of::<u32>() * 5
+            + std::mem::size_of::<ib_mad_addr>()
+            + (std::mem::size_of::<ib_mad>() - std::mem::size_of::<[u8; 232]>())
+            + 40;
+        port.file
+            .seek(SeekFrom::Start(attr_offset as u64))
+            .unwrap();
+        port.file.write_all(&ATTR_BYTES).unwrap();
+
+        // rewind for reading
+        port.file.seek(SeekFrom::Start(0)).unwrap();
+
+        let mut recv_umad = sample_umad(0);
+        let res = ibmad::mad::recv(&mut port, &mut recv_umad).unwrap();
+        assert_eq!(res, std::mem::size_of::<ib_user_mad>());
+
+        let dr: &ibmad::mad::dr_smp_mad = unsafe {
+            &*(recv_umad.data[24..].as_ptr() as *const ibmad::mad::dr_smp_mad)
+        };
+        assert_eq!(&dr.attr_layout[..ATTR_BYTES.len()], &ATTR_BYTES);
+    }
+
 }
 
