@@ -49,8 +49,32 @@ mod mad_tests {
                 match open_port(hca) {
                     Ok(mut port) => {
                         log::debug!("send_success - Opened IB MAD Port: {:?}", port);
-                        if let Ok(_) = register_agent(&mut port, 0x81) {
-                            ibmad::mad::send(&mut port);
+                        if let Ok(agent_id) = register_agent(&mut port, 0x81) {
+                            let umad = ibmad::mad::ib_user_mad {
+                                agent_id,
+                                status: 0,
+                                timeout_ms: 0,
+                                retries: 0,
+                                length: 0,
+                                addr: ibmad::mad::ib_mad_addr {
+                                    qpn: 0,
+                                    qkey: 0,
+                                    lid: 0,
+                                    sl: 0,
+                                    path_bits: 0,
+                                    grh_present: 0,
+                                    gid_index: 0,
+                                    hop_limit: 0,
+                                    traffic_class: 0,
+                                    gid: [0; 16],
+                                    flow_label: 0,
+                                    pkey_index: 0,
+                                    reserved: [0; 6],
+                                },
+                                data: [0; 256],
+                            };
+
+                            let _ = ibmad::mad::send(&mut port, &umad);
                         }
                     },
                     Err(e) => {

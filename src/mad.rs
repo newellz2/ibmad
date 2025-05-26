@@ -173,109 +173,50 @@ pub fn register_agent(port: &mut IbMadPort, mgmt_class: u8) -> Result<u32, io::E
 }
 
 
-pub fn send(port: &mut IbMadPort) {
+pub fn send(port: &mut IbMadPort, umad: &ib_user_mad) -> io::Result<usize> {
+    if port.file.as_raw_fd() < 0 {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid file descriptor"));
+    }
 
-    let mut mad = ib_mad{
-        base_version: 0x1,
-        mgmt_class: (0x81 as u8).to_be(),
-        class_version: 0x1,
-        method: (0x1 as u8).to_be(),
-        status: 0x0,
-        hop_ptr: 0x00,
-        hop_cnt: (0x02 as u8).to_be(),
-        tid: (0x11 as u64).to_be(),
-        attr_id: (0x0010 as u16).to_be(),
-        additional_status: 0x0000,
-        attr_mod: 0x0000_0000,
-        data: [0; 232],
-    };
+    if umad.length as usize > umad.data.len() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "length exceeds buffer"));
+    }
 
-    let mut dr_smp_mad = dr_smp_mad {
-        m_key: 0x0,
-        drslid: 0xffff,
-        drdlid: 0xffff,
-        reserved: [0; 28],
-        attr_layout: [0; 64],
-        initial_path: [0; 64],
-        return_path: [0; 64],
-    };
+    if umad.agent_id == 0 {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "agent_id must be non zero"));
+    }
 
-    let mut umad = ib_user_mad{
-        agent_id: 0,
-        status: 0,
-        timeout_ms: 100,
-        retries: 1,
-        length: 0,
-        addr: ib_mad_addr { 
-            qpn: 0, 
-            qkey: (0x80010000 as u32).to_be(), 
-            lid: 0xffff, 
-            sl: 0, 
-            path_bits: 0, 
-            grh_present: 0, 
-            gid_index: 0, 
-            hop_limit: 64, 
-            traffic_class: 0, 
-            gid: [0; 16], 
-            flow_label: 0, 
-            pkey_index: 0, 
-            reserved: [0; 6]
-        },
-        data: [0; 256],
-    };
-
-    dr_smp_mad.initial_path[0] = 0;
-    dr_smp_mad.initial_path[1] = 1;
-    dr_smp_mad.initial_path[2] = 3;
-
-    //dr_mad.initial_path.reverse();
-
-    let dr_smp_ptr = &mut dr_smp_mad as *mut dr_smp_mad as *mut u8;
-
-    unsafe {
-        std::ptr::copy_nonoverlapping(dr_smp_ptr, mad.data.as_mut_ptr(), std::mem::size_of::<[u8; 232 as usize] >());
-    };
-
-    let mad_ptr = &mut mad as *mut ib_mad as *mut u8;
-
-    unsafe {
-        std::ptr::copy_nonoverlapping(mad_ptr, umad.data.as_mut_ptr(), std::mem::size_of::<[u8; 256 as usize] >());
-    };
-
-    let mut mad_bytes: &mut [u8] = unsafe {
-        std::slice::from_raw_parts_mut(
-            &umad as *const ib_user_mad as *mut u8,
+    let bytes: &[u8] = unsafe {
+        std::slice::from_raw_parts(
+            umad as *const ib_user_mad as *const u8,
             std::mem::size_of::<ib_user_mad>(),
         )
     };
 
-    dump_bytes(mad_bytes);
+    port.file.write(bytes)
+}
 
-    let r  = port.file.write(&mad_bytes);
-    match r {
-        Ok(rc) => {
-            log::debug!("send - write rc: {}", rc);
-
-        },
-        Err(e) => {
-            log::debug!("send - write error: {:?}", e);
-
-        }
+pub fn recv(port: &mut IbMadPort, umad: &mut ib_user_mad) -> io::Result<usize> {
+    if port.file.as_raw_fd() < 0 {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid file descriptor"));
     }
 
-    println!("");
-    let r  = port.file.read(&mut mad_bytes);
-    match r {
-        Ok(rc) => {
-            log::debug!("send - read rc: {}", rc);
+    let buf: &mut [u8] = unsafe {
+        std::slice::from_raw_parts_mut(
+            umad as *mut ib_user_mad as *mut u8,
+            std::mem::size_of::<ib_user_mad>(),
+        )
+    };
 
-        },
-        Err(e) => {
-            log::debug!("send - read error: {:?}", e);
+    let rc = port.file.read(buf)?;
 
-        }
+    if rc != buf.len() {
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "short read"));
     }
-    dump_bytes(mad_bytes);
 
+    if umad.length as usize > umad.data.len() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "length exceeds buffer"));
+    }
 
+    Ok(rc)
 }
