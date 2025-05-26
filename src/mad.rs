@@ -10,6 +10,7 @@ pub const IB_MGMT_CLASS_PERFORMANCE: u8 = 0x4;
 pub const IB_MGMT_CLASS_LID_ROUTED_SMP: u8 = 0x1;
 pub const IB_MGMT_CLASS_DIRECT_ROUTED_SMP: u8 = 0x81;
 
+pub const IB_DEFAULT_QKEY: u32 = 0x80010000;
 
 #[derive(Debug, Copy, Clone)]
 #[repr(C, packed)]
@@ -29,7 +30,7 @@ pub struct ib_mad {
 	pub data:  [u8; 232]
 }
 
-#[derive(Clone)]
+#[derive(Debug, Copy, Clone)]
 #[repr(C)]
 #[allow(non_camel_case_types)]
 pub struct ib_user_mad {
@@ -61,7 +62,7 @@ pub struct ib_mad_addr {
     pub reserved: [u8; 6],
 }
 
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 #[repr(C)]
 #[allow(non_camel_case_types)]
 pub struct dr_smp_mad {
@@ -182,16 +183,14 @@ pub fn send(port: &mut IbMadPort, umad: &ib_user_mad) -> io::Result<usize> {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "length exceeds buffer"));
     }
 
-    if umad.agent_id == 0 {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "agent_id must be non zero"));
-    }
-
     let bytes: &[u8] = unsafe {
         std::slice::from_raw_parts(
             umad as *const ib_user_mad as *const u8,
             std::mem::size_of::<ib_user_mad>(),
         )
     };
+
+    log::debug!("send - MAD bytes:\n{}", dump_bytes(bytes));
 
     port.file.write(bytes)
 }
@@ -210,12 +209,14 @@ pub fn recv(port: &mut IbMadPort, umad: &mut ib_user_mad) -> io::Result<usize> {
 
     let rc = port.file.read(buf)?;
 
+    log::debug!("recv - MAD bytes:\n{}", dump_bytes(buf));
+
     if rc != buf.len() {
         return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "short read"));
     }
 
-    if umad.length as usize > umad.data.len() {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "length exceeds buffer"));
+    if umad.length as usize != umad.data.len() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "length incorrect"));
     }
 
     Ok(rc)

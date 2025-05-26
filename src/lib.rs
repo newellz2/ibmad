@@ -46,19 +46,27 @@ ioctl_readwrite!(ib_user_mad_register_agent2, IB_IOCTL_MAGIC, IB_IOCTL_REG_AGENT
 ioctl_write_int!(ib_user_mad_unregister_agent, IB_IOCTL_MAGIC, IB_IOCTL_UNREG_AGENT);
 ioctl_none!(ib_user_mad_enable_pkey, IB_IOCTL_MAGIC, IB_IOCTL_EN_PKEY);
 
-fn dump_bytes(buf: &[u8]) {
-    print!("0x0000: ");
+pub fn dump_bytes(buf: &[u8]) -> String {
+    let mut output: String = String::new();
+
+    output.push_str(&format!("0x0000: "));
     let len = buf.len();
     for (i, &byte) in buf.iter().enumerate() {
-        print!("{:02x} ", byte);
+        output.push_str(&format!("{:02x} ", byte));
         if (i + 1) % 8 == 0{
-            print!(" ");
+            output.push_str(" ");
+
         }
         if (i + 1) % 16 == 0 { 
-            println!(); // Add a newline after every 8 bytes
+            // Add a newline after every 8 bytes
+            output.push_str("\n");
+
             if i < len - 1 {
-                print!("0x{:04x}: ", i);
+                output.push_str(&format!("0x{:04x}: ", i));
+
             }
         }
     }
+
+    output
 }
