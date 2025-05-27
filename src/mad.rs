@@ -31,7 +31,7 @@ pub struct ib_mad {
 }
 
 #[derive(Debug, Copy, Clone)]
-#[repr(C)]
+#[repr(C, packed)]
 #[allow(non_camel_case_types)]
 pub struct ib_user_mad {
     pub agent_id: u32,
@@ -44,7 +44,7 @@ pub struct ib_user_mad {
 }
 
 #[derive(Debug, Copy, Clone)]
-#[repr(C)]
+#[repr(C, packed)]
 #[allow(non_camel_case_types)]
 pub struct ib_mad_addr {
     pub qpn: u32,
@@ -63,7 +63,7 @@ pub struct ib_mad_addr {
 }
 
 #[derive(Debug, Copy, Clone)]
-#[repr(C)]
+#[repr(C, packed)]
 #[allow(non_camel_case_types)]
 pub struct dr_smp_mad {
     pub m_key: u64,
@@ -75,6 +75,23 @@ pub struct dr_smp_mad {
     pub return_path: [u8; 64],
 }
 
+#[repr(C, packed)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct node_info {
+    pub base_version: u8,
+    pub class_version: u8,
+    pub node_type: u8,
+    pub nports: u8,
+    pub system_guid: u64,
+    pub node_guid: u64,
+    pub port_guid: u64,
+    pub partition_cap: u16,
+    pub device_id: u16,
+    pub revision: u32,
+    pub local_port: u8,
+    pub vendor_id: [u8; 3],
+    pub reserved: [u8; 24],
+}
 
 #[derive(Debug)]
 pub struct  IbMadPort {

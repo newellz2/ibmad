@@ -151,25 +151,7 @@ mod mad_io_tests {
         port.file.write_all(desc).unwrap();
     }
 
-    #[repr(C, packed)]
-    #[derive(Clone, Copy, Debug, Default, PartialEq)]
-    struct NodeInfo {
-        base_version: u8,
-        class_version: u8,
-        node_type: u8,
-        nports: u8,
-        system_guid: u64,
-        node_guid: u64,
-        port_guid: u64,
-        partition_cap: u16,
-        device_id: u16,
-        revision: u32,
-        local_port: u8,
-        vendor_id: [u8; 3],
-        reserved: [u8; 24],
-    }
-
-    fn write_node_info(port: &mut IbMadPort, info: &NodeInfo) {
+    fn write_node_info(port: &mut IbMadPort, info: &ibmad::mad::node_info) {
         let attr_offset = std::mem::size_of::<u32>() * 5
             + std::mem::size_of::<ib_mad_addr>()
             + (std::mem::size_of::<ibmad::mad::ib_mad>() - std::mem::size_of::<[u8; 232]>())
@@ -180,8 +162,8 @@ mod mad_io_tests {
             .unwrap();
         let bytes: &[u8] = unsafe {
             std::slice::from_raw_parts(
-                info as *const NodeInfo as *const u8,
-                std::mem::size_of::<NodeInfo>(),
+                info as *const ibmad::mad::node_info as *const u8,
+                std::mem::size_of::<ibmad::mad::node_info>(),
             )
         };
         port.file.write_all(bytes).unwrap();
@@ -337,7 +319,7 @@ mod mad_io_tests {
         write_status(&mut port, 0x04);
         update_tid(&mut port, 0xfeed_beef_0000_0000);
 
-        let node_info = NodeInfo {
+        let node_info = ibmad::mad::node_info {
             base_version: 1,
             class_version: 1,
             node_type: 2,
@@ -363,7 +345,9 @@ mod mad_io_tests {
         let dr: &ibmad::mad::dr_smp_mad = unsafe {
             &*(recv_umad.data[24..].as_ptr() as *const ibmad::mad::dr_smp_mad)
         };
-        let recv_info: &NodeInfo = unsafe { &*(dr.attr_layout.as_ptr() as *const NodeInfo) };
+        let recv_info: &ibmad::mad::node_info = unsafe { 
+            &*(dr.attr_layout.as_ptr() as *const ibmad::mad::node_info) 
+        };
 
         assert_eq!(recv_info, &node_info);
     }
