@@ -274,6 +274,8 @@ mod mad_tests {
 
                             log::debug!("tests - send_nodeinfo_success -  NodeInfo: {:?}", ni);
                             log::debug!("tests - send_nodeinfo_success -  NodeInfo.system_guid: {:x}", ni.system_guid.to_be());
+                            log::debug!("tests - send_nodeinfo_success -  NodeInfo.device_id: {}", ni.device_id.to_be());
+                            log::debug!("tests - send_nodeinfo_success -  NodeInfo.revision: {:x}", ni.revision.to_be());
 
 
                         }
