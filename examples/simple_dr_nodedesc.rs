@@ -6,6 +6,8 @@ fn main() {
     if let Ok(cas) = result {
         let ib_ca = cas.first().unwrap();
 
+        println!("CA: {:?}", ib_ca);
+
         match ibmad::mad::open_port(ib_ca) {
             Ok(mut port) => {
                 if let Ok(agent_id) = ibmad::mad::register_agent(&mut port, 0x81) {

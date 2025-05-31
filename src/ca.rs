@@ -370,17 +370,19 @@ pub fn get_ca_dev_paths(path: &path::PathBuf) -> Option<IbCaDevPaths> {
                 let entry = entry.ok()?;
                 match entry.file_name().to_str() {
                     Some(file_name) => {
-                        let file_path = path::PathBuf::from(SYS_CA_UMAD_PATH).join(file_name);
-                        log::debug!("get_ca_dev_paths - Checking for device path '{:?}'", file_path);
+
+                        let file_path = path::PathBuf::from(DEV_CA_UMAD_PATH).join(file_name);
+
+                        log::debug!("get_ca_dev_paths - Checking for device path: {:?}", file_path);
                         if file_name.starts_with("umad") {
                             if file_path.exists() {
-                                log::debug!("get_ca_dev_paths - Found device path '{:?}'", file_path);
+                                log::debug!("get_ca_dev_paths - Found device path :{:?}", file_path);
                                 ib_ca_dev_paths.umad_dev_path = Some(file_path);
                             }
 
                         } else if file_name.starts_with("issm") {
                             if file_path.exists() {
-                                log::debug!("get_ca_dev_paths - Found device path '{:?}'", file_path);
+                                log::debug!("get_ca_dev_paths - Found device path: {:?}", file_path);
                                 ib_ca_dev_paths.issm_dev_path = Some(file_path);
                             }
 
@@ -402,7 +404,7 @@ pub fn get_ca_dev_paths(path: &path::PathBuf) -> Option<IbCaDevPaths> {
 pub fn get_ca (hca_name: &str) -> Result<IbCa, std::io::Error> {
     let hca_path = path::PathBuf::from(SYS_INFINIBAND).join(hca_name);
 
-    log::debug!("get_ca - hca_path: '{:?}'", hca_path);
+    log::debug!("get_ca - hca_path: {:?}", hca_path);
 
     match hca_path.exists(){
         true => {
