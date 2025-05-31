@@ -9,12 +9,12 @@ mod mad_tests {
 
         let _ = env_logger::try_init();
 
-        if !Path::new(ibmad::SYS_INFINIBAND).exists() {
+        if !Path::new(ibmad::ca::SYS_INFINIBAND).exists() {
             eprintln!("IB system path not found, skipping test");
             return;
         }
 
-        match  ibmad::cas::get_cas(){
+        match  ibmad::ca::get_cas(){
             Ok(cas) =>{
                 assert!(cas.len() > 0, "No CAs found.");
                 let hca = &cas[0];
@@ -42,7 +42,7 @@ mod mad_tests {
             return;
         }
 
-        match  ibmad::cas::get_cas(){
+        match  ibmad::ca::get_cas(){
             Ok(cas) =>{
                 assert!(cas.len() > 0, "No CAs found.");
                 let hca = &cas[0];
@@ -160,7 +160,7 @@ mod mad_tests {
             return;
         }
 
-        match  ibmad::cas::get_cas(){
+        match  ibmad::ca::get_cas(){
             Ok(cas) =>{
                 assert!(cas.len() > 0, "No CAs found.");
                 let hca = &cas[0];

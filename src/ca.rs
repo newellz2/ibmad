@@ -7,13 +7,51 @@ use std::path::PathBuf;
 
 use log;
 
-const HCA_UMAD_SYS_PATH: &str = "device/infiniband_mad";
-const HCA_UMAD_DEV_PATH: &str = "/dev/infiniband";
-const HCA_PROPERTIES: [&str; 8] =  [
-    "board_id", "fw_ver", "hca_type", 
-    "hw_rev","node_desc", "node_guid", 
-    "node_type", "sys_image_guid"
+pub const SYS_INFINIBAND: &str = "/sys/class/infiniband";
+
+
+//CA
+const SYS_CA_BOARD_ID: &str = "board_id";
+const SYS_CA_NODE_TYPE: &str = "node_type";
+const SYS_CA_FW_VERS: &str = "fw_ver";
+const SYS_CA_HW_VERS: &str = "hw_rev";
+const SYS_CA_TYPE: &str = "hca_type";
+const SYS_CA_NODE_GUID: &str = "node_guid";
+const SYS_CA_SYS_GUID: &str = "sys_image_guid";
+const SYS_CA_NODE_DESC: &str = "node_desc";
+
+//CA Port
+const SYS_PORT_LMC: &str = "lid_mask_count";
+const SYS_PORT_SMLID: &str = "sm_lid";
+const SYS_PORT_SMSL: &str = "sm_sl";
+const SYS_PORT_LID: &str ="lid";
+const SYS_PORT_STATE: &str = "state"; // Logical State
+const SYS_PORT_PHY_STATE: &str = "phys_state";
+const SYS_PORT_CAPMASK: &str = "cap_mask";
+const SYS_PORT_RATE: &str = "rate";
+const SYS_PORT_GUID: &str = "port_guid";
+const SYS_PORT_GID: &str= "gids/0";
+const SYS_PORT_LINK_LAYER: &str = "link_layer";
+
+const SYS_CA_UMAD_PATH: &str = "device/infiniband_mad";
+const DEV_CA_UMAD_PATH: &str = "/dev/infiniband";
+
+const SYS_CA_PROPERTIES: [&str; 8] =  [
+    SYS_CA_BOARD_ID, SYS_CA_NODE_TYPE, SYS_CA_FW_VERS,
+    SYS_CA_HW_VERS, SYS_CA_TYPE, SYS_CA_NODE_GUID,
+    SYS_CA_SYS_GUID, SYS_CA_NODE_DESC,
 ];
+
+const SYS_CA_PORT_PROPERTIES: [&str; 11] =  [
+    SYS_PORT_LMC, SYS_PORT_SMLID, SYS_PORT_SMSL,
+    SYS_PORT_LID, SYS_PORT_STATE, SYS_PORT_PHY_STATE,
+    SYS_PORT_CAPMASK, SYS_PORT_RATE, SYS_PORT_GUID,
+    SYS_PORT_GID, SYS_PORT_LINK_LAYER,
+];
+
+const SYS_CA_PORT_COUNTERS_DIR: &str = "counters";
+const SYS_CA_PORT_HW_COUNTERS_DIR: &str = "hw_counters";
+
 
 #[derive(Debug)]
 pub enum IbPortPhyState {
@@ -40,6 +78,7 @@ pub enum IbPortLinkLayerState {
 
 #[derive(Debug)]
 pub struct IbCaPort {
+    pub path: String,
     pub number: u32,
     pub phy_state: IbPortPhyState,
     pub link_layer: Option<String>,
@@ -48,8 +87,6 @@ pub struct IbCaPort {
     pub sm_sl: u8,
     pub state: IbPortLinkLayerState,
     pub lid: u32,
-    pub counters: Option<HashMap<String,u64>>,
-    pub hw_counters: Option<HashMap<String,u64>>,
     pub pkeys: Vec<u64>,
 }
 
@@ -75,17 +112,66 @@ pub struct IbCa {
     pub dev_paths: Option<IbCaDevPaths>,
 }
 
+impl IbCaPort  {
+    pub fn get_counters(&self) -> Result<HashMap<String,u64>, io::Error> {
+        let mut counters = HashMap::new();
+
+        let counters_path = PathBuf::from(&self.path).join(SYS_CA_PORT_COUNTERS_DIR);
+        if counters_path.exists() {
+            for entry in fs::read_dir(counters_path)? {
+                let entry = entry?;
+
+                let name = entry.file_name().into_string().unwrap();
+
+                if let Ok(data) = fs::read_to_string(entry.path()) {
+                    if let Ok(v) = data.trim().parse::<u64>() {
+                        counters.insert(name, v);
+                    }
+                }
+
+            }
+        }
+
+        Ok(counters)
+
+    }
+
+    pub fn get_hw_counters(&self) -> Result<HashMap<String,u64>, io::Error> {
+        let mut counters = HashMap::new();
+
+        let counters_path = PathBuf::from(&self.path).join(SYS_CA_PORT_HW_COUNTERS_DIR);
+        if counters_path.exists() {
+            for entry in fs::read_dir(counters_path)? {
+                let entry = entry?;
+
+                let name = entry.file_name().into_string().unwrap();
+
+                if let Ok(data) = fs::read_to_string(entry.path()) {
+                    if let Ok(v) = data.trim().parse::<u64>() {
+                        counters.insert(name, v);
+                    }
+                }
+
+            }
+        }
+
+        Ok(counters)
+
+    }
+
+}
+
 pub fn get_cas_names() -> Result<Vec<String>, std::io::Error> {
     log::debug!("get_cas_names called");
     let mut cas: Vec<String> = Vec::new();
 
-    log::debug!("Reading directory: {}", crate::SYS_INFINIBAND);
-    match fs::exists(crate::SYS_INFINIBAND) {
+    log::debug!("Reading directory: {}", SYS_INFINIBAND);
+    match fs::exists(SYS_INFINIBAND) {
         Ok(r) => {
             match r {
                 true => {
-                    log::debug!("{} directory exists", crate::SYS_INFINIBAND);
-                    for entry in fs::read_dir(crate::SYS_INFINIBAND)? {
+                    log::debug!("{} directory exists", SYS_INFINIBAND);
+                    for entry in fs::read_dir(SYS_INFINIBAND)? {
                         let entry = entry?;
                         let file_name = entry.file_name().into_string().unwrap();
                         log::trace!("Found entry, path={:?} filename={}", entry.path(), file_name);
@@ -95,7 +181,7 @@ pub fn get_cas_names() -> Result<Vec<String>, std::io::Error> {
                     }
                 }
                 false => {
-                    log::debug!("Directory '{}' does not exist", crate::SYS_INFINIBAND);
+                    log::debug!("Directory '{}' does not exist", SYS_INFINIBAND);
                     let err = std::io::Error::new(
                         io::ErrorKind::NotFound, 
                         io::Error::other("Directory does not exist".to_string())
@@ -105,7 +191,7 @@ pub fn get_cas_names() -> Result<Vec<String>, std::io::Error> {
             }
         }
         Err(e) => {
-            log::debug!("Error checking if {} exists: {}", crate::SYS_INFINIBAND, e);
+            log::debug!("Error checking if {} exists: {}", SYS_INFINIBAND, e);
             let err = std::io::Error::new(io::ErrorKind::Other, e);
             return Err(err)
         }
@@ -114,6 +200,7 @@ pub fn get_cas_names() -> Result<Vec<String>, std::io::Error> {
     log::debug!("get_cas_names successfully returned {} entries", cas.len());
     Ok(cas)
 }
+
 
 pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbCaPort>, io::Error> {
 
@@ -128,7 +215,14 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbCaPort>, io::Erro
             match r {
                 true => {
                     for entry in fs::read_dir(&ports_path)? {
+
+                        let entry: fs::DirEntry = entry?;
+                        let file_name = entry.file_name().into_string().unwrap();
+
+                        log::trace!("get_ib_ports_info - Found port, Path: {:?}, Filename: {}", entry.path(), file_name);
+
                         let mut port = IbCaPort{
+                            path: entry.path().to_str().unwrap().to_owned(),
                             number: 0,
                             phy_state: IbPortPhyState::Unknown,
                             link_layer: None,
@@ -137,15 +231,8 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbCaPort>, io::Erro
                             sm_sl: 0,
                             state: IbPortLinkLayerState::Unknown,
                             lid: 0,
-                            counters: None,
-                            hw_counters: None,
                             pkeys: Vec::new(),
                         };
-
-                        let entry = entry?;
-                        let file_name = entry.file_name().into_string().unwrap();
-
-                        log::trace!("get_ib_ports_info - Found port, Path: {:?}, Filename: {}", entry.path(), file_name);
 
                         match file_name.parse::<u32>() {
                             Ok(num) => {
@@ -157,7 +244,7 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbCaPort>, io::Erro
                             }
                         }
 
-                        let phy_state_path = entry.path().join("phys_state");
+                        let phy_state_path = entry.path().join(SYS_PORT_PHY_STATE);
                         log::trace!("get_ib_ports_info - Path: {:?}, phys_state Path: '{:?}'", entry.path(), phy_state_path);
 
                         let data = fs::read(phy_state_path)?;
@@ -177,21 +264,21 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbCaPort>, io::Erro
                             }
                         }
 
-                        let link_layer_path = entry.path().join("link_layer");
+                        let link_layer_path = entry.path().join(SYS_PORT_LINK_LAYER);
                         if link_layer_path.exists() {
                             if let Ok(data) = fs::read_to_string(link_layer_path) {
                                 port.link_layer = Some(data.trim().to_string());
                             }
                         }
 
-                        let rate_path = entry.path().join("rate");
+                        let rate_path = entry.path().join(SYS_PORT_RATE);
                         if rate_path.exists() {
                             if let Ok(data) = fs::read_to_string(rate_path) {
                                 port.rate = Some(data.trim().to_string());
                             }
                         }
 
-                        let sm_lid_path = entry.path().join("sm_lid");
+                        let sm_lid_path = entry.path().join(SYS_PORT_SMLID);
                         if sm_lid_path.exists() {
                             if let Ok(data) = fs::read_to_string(sm_lid_path) {
                                 if let Ok(v) = data.trim().parse::<u32>() {
@@ -200,7 +287,7 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbCaPort>, io::Erro
                             }
                         }
 
-                        let sm_sl_path = entry.path().join("sm_sl");
+                        let sm_sl_path = entry.path().join(SYS_PORT_SMSL);
                         if sm_sl_path.exists() {
                             if let Ok(data) = fs::read_to_string(sm_sl_path) {
                                 if let Ok(v) = data.trim().parse::<u8>() {
@@ -209,7 +296,7 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbCaPort>, io::Erro
                             }
                         }
 
-                        let state_path = entry.path().join("state");
+                        let state_path = entry.path().join(SYS_PORT_STATE);
                         if state_path.exists() {
                             if let Ok(data) = fs::read_to_string(state_path) {
                                 let state_str = data.trim();
@@ -225,43 +312,13 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbCaPort>, io::Erro
                             }
                         }
 
-                        let lid_path = entry.path().join("lid");
+                        let lid_path = entry.path().join(SYS_PORT_LID);
                         if lid_path.exists() {
                             if let Ok(data) = fs::read_to_string(lid_path) {
                                 if let Ok(v) = data.trim().parse::<u32>() {
                                     port.lid = v;
                                 }
                             }
-                        }
-
-                        let counters_path = entry.path().join("counters");
-                        if counters_path.exists() {
-                            let mut counters = HashMap::new();
-                            for ctr_entry in fs::read_dir(counters_path)? {
-                                let ctr_entry = ctr_entry?;
-                                let name = ctr_entry.file_name().into_string().unwrap();
-                                if let Ok(data) = fs::read_to_string(ctr_entry.path()) {
-                                    if let Ok(v) = data.trim().parse::<u64>() {
-                                        counters.insert(name, v);
-                                    }
-                                }
-                            }
-                            port.counters = Some(counters);
-                        }
-
-                        let hw_counters_path = entry.path().join("hw_counters");
-                        if hw_counters_path.exists() {
-                            let mut hw_counters = HashMap::new();
-                            for ctr_entry in fs::read_dir(hw_counters_path)? {
-                                let ctr_entry = ctr_entry?;
-                                let name = ctr_entry.file_name().into_string().unwrap();
-                                if let Ok(data) = fs::read_to_string(ctr_entry.path()) {
-                                    if let Ok(v) = data.trim().parse::<u64>() {
-                                        hw_counters.insert(name, v);
-                                    }
-                                }
-                            }
-                            port.hw_counters = Some(hw_counters);
                         }
 
                         let pkeys_path = entry.path().join("pkeys");
@@ -288,7 +345,7 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbCaPort>, io::Erro
         }
 
         Err(e) => {
-            log::debug!("get_ib_ports_info - Error checking if {} exists: {}", crate::SYS_INFINIBAND, e);
+            log::debug!("get_ib_ports_info - Error checking if {} exists: {}", SYS_INFINIBAND, e);
             let err = std::io::Error::new(io::ErrorKind::Other, e);
             return Err(err)
         }
@@ -304,7 +361,7 @@ pub fn get_ca_dev_paths(path: &path::PathBuf) -> Option<IbCaDevPaths> {
         issm_dev_path: None,
     };
 
-    let sys_path = path.join(HCA_UMAD_SYS_PATH);
+    let sys_path = path.join(SYS_CA_UMAD_PATH);
 
     log::debug!("get_ca_dev_paths - Checking sys path {:?}", sys_path);
     match sys_path.exists() {
@@ -313,7 +370,7 @@ pub fn get_ca_dev_paths(path: &path::PathBuf) -> Option<IbCaDevPaths> {
                 let entry = entry.ok()?;
                 match entry.file_name().to_str() {
                     Some(file_name) => {
-                        let file_path = path::PathBuf::from(HCA_UMAD_DEV_PATH).join(file_name);
+                        let file_path = path::PathBuf::from(SYS_CA_UMAD_PATH).join(file_name);
                         log::debug!("get_ca_dev_paths - Checking for device path '{:?}'", file_path);
                         if file_name.starts_with("umad") {
                             if file_path.exists() {
@@ -342,67 +399,89 @@ pub fn get_ca_dev_paths(path: &path::PathBuf) -> Option<IbCaDevPaths> {
     Some(ib_ca_dev_paths)
 }
 
+pub fn get_ca (hca_name: &str) -> Result<IbCa, std::io::Error> {
+    let hca_path = path::PathBuf::from(SYS_INFINIBAND).join(hca_name);
+
+    log::debug!("get_ca - hca_path: '{:?}'", hca_path);
+
+    match hca_path.exists(){
+        true => {
+            let path_str = hca_path.to_str().unwrap();
+
+            let ports = get_ib_ports_info(&hca_path)?;
+            log::trace!("get_ca - get_ib_ports_info result:{:?}", ports);
+
+            let mut ib_ca = IbCa {
+                name: hca_name.to_owned(),
+                board_id: None,
+                fw_ver: None,
+                hca_type: None,
+                hw_rev: None,
+                node_desc: None,
+                node_guid: None,
+                node_type: None,
+                sys_image_guid: None,
+                dev_paths: get_ca_dev_paths(&hca_path),
+                ports,
+            };
+
+            for prop in SYS_CA_PROPERTIES.iter() {
+                let hca_prop_path = hca_path.join(prop);
+                let file_path = hca_path.join(hca_prop_path);
+                if file_path.exists() {
+                    if let Ok(data) = fs::read_to_string(&file_path) {
+                        match *prop {
+                            SYS_CA_BOARD_ID => ib_ca.board_id = Some(data.trim().to_owned()),
+                            SYS_CA_TYPE=> ib_ca.hca_type = Some(data.trim().to_owned()),
+                            SYS_CA_FW_VERS => ib_ca.fw_ver = Some(data.trim().to_owned()),
+                            SYS_CA_HW_VERS => ib_ca.hw_rev = Some(data.trim().to_owned()),
+                            SYS_CA_NODE_GUID => ib_ca.node_guid = Some(data.trim().to_owned()),
+                            SYS_CA_NODE_TYPE => ib_ca.node_type = Some(data.trim().to_owned()),
+                            SYS_CA_SYS_GUID => ib_ca.sys_image_guid = Some(data.trim().to_owned()),
+                            SYS_CA_NODE_DESC => ib_ca.node_desc = Some(data.trim().to_owned()),
+                            _ => {}, //Do Nothing
+                        }
+                    }
+                }
+            };
+
+            Ok(ib_ca)
+        },
+        false => {
+            log::debug!("Directory '{:?}' does not exist", hca_path);
+            let err = std::io::Error::new(
+                io::ErrorKind::NotFound, 
+                io::Error::other("Directory does not exist".to_string())
+            );
+            return Err(err)
+        }
+    }
+}
+
 pub fn get_cas() -> Result<Vec<IbCa>, std::io::Error> {
     log::debug!("get_linkup_cas_names called");
     let mut cas: Vec<IbCa> = Vec::new();
 
-    log::debug!("Reading directory: {}", crate::SYS_INFINIBAND);
-    match fs::exists(crate::SYS_INFINIBAND) {
+    log::debug!("Reading directory: {}", SYS_INFINIBAND);
+    match fs::exists(SYS_INFINIBAND) {
         Ok(r) => {
             match r {
                 true => {
-                    log::debug!("{} directory exists", crate::SYS_INFINIBAND);
-                    for entry in fs::read_dir(crate::SYS_INFINIBAND)? {
+                    log::debug!("{} directory exists", SYS_INFINIBAND);
+                    for entry in fs::read_dir(SYS_INFINIBAND)? {
                         let entry = entry?;
                         let file_name = entry.file_name().into_string().unwrap();
 
+                        let ib_ca = get_ca(&file_name)?;
                         log::trace!("get_cas - Found entry, path={:?} filename={}", entry.path(), file_name);
 
-                        let r = get_ib_ports_info(&entry.path());
-                        log::trace!("get_cas - get_ib_ports_info result:{:?}", r);
 
-                        if let Ok(ports) = r {
-                            let mut ib_ca = IbCa {
-                                name: file_name,
-                                board_id: None,
-                                fw_ver: None,
-                                hca_type: None,
-                                hw_rev: None,
-                                node_desc: None,
-                                node_guid: None,
-                                node_type: None,
-                                sys_image_guid: None,
-                                dev_paths: get_ca_dev_paths(&entry.path()),
-                                ports,
-                            };
-
-                            for prop in HCA_PROPERTIES.iter() {
-                                let hca_prop_path = entry.path().join(prop);
-                                let file_path = entry.path().join(hca_prop_path);
-                                if file_path.exists() {
-                                    if let Ok(data) = fs::read_to_string(&file_path) {
-                                        match prop {
-                                            &"board_id" => ib_ca.board_id = Some(data.trim().to_owned()),
-                                            &"hca_type" => ib_ca.hca_type = Some(data.trim().to_owned()),
-                                            &"fw_ver" => ib_ca.fw_ver = Some(data.trim().to_owned()),
-                                            &"hw_rev" => ib_ca.hw_rev = Some(data.trim().to_owned()),
-                                            &"node_guid" => ib_ca.node_guid = Some(data.trim().to_owned()),
-                                            &"node_type" => ib_ca.node_type = Some(data.trim().to_owned()),
-                                            &"sys_image_guid" => ib_ca.sys_image_guid = Some(data.trim().to_owned()),
-                                            &"node_desc" => ib_ca.node_desc = Some(data.trim().to_owned()),
-                                            _ => {}, //Do Nothing
-                                        }
-                                    }
-                                }
-                            }
-
-                            log::trace!("get_cas - adding ca to return vec: {:?}", ib_ca);
-                            cas.push(ib_ca);
-                        }
+                        log::trace!("get_cas - adding ca to return vec: {:?}", ib_ca);
+                        cas.push(ib_ca);
                     }
                 }
                 false => {
-                    log::debug!("Directory '{}' does not exist", crate::SYS_INFINIBAND);
+                    log::debug!("Directory '{}' does not exist", SYS_INFINIBAND);
                     let err = std::io::Error::new(
                         io::ErrorKind::NotFound, 
                         io::Error::other("Directory does not exist".to_string())
@@ -412,7 +491,7 @@ pub fn get_cas() -> Result<Vec<IbCa>, std::io::Error> {
             }
         }
         Err(e) => {
-            log::debug!("Error checking if {} exists: {}", crate::SYS_INFINIBAND, e);
+            log::debug!("Error checking if {} exists: {}", SYS_INFINIBAND, e);
             let err = std::io::Error::new(io::ErrorKind::Other, e);
             return Err(err)
         }

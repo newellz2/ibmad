@@ -12,7 +12,7 @@ mod agent_tests {
             return;
         }
 
-        match  ibmad::cas::get_cas(){
+        match ibmad::ca::get_cas(){
             Ok(cas) =>{
                 assert!(cas.len() > 0, "No CAs found.");
                 let hca = &cas[0];

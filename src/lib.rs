@@ -6,9 +6,7 @@ pub const IB_IOCTL_UNREG_AGENT: u64 = 2;
 pub const IB_IOCTL_EN_PKEY: u8 = 3;
 pub const IB_IOCTL_REG_AGENT2: u64 = 4;
 
-pub const SYS_INFINIBAND: &str = "/sys/class/infiniband";
-
-pub mod cas;
+pub mod ca;
 pub mod mad;
 
 

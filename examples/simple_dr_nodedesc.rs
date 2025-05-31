@@ -1,6 +1,6 @@
 
 fn main() {
-    let result = ibmad::cas::get_cas();
+    let result = ibmad::ca::get_cas();
  
     // Get the first CA
     if let Ok(cas) = result {
