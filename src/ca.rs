@@ -70,10 +70,10 @@ pub enum IbPortLinkLayerState {
     Unknown = -1,
     Nop = 0,
     Down= 1,
-    Init = 3,
-    Armed = 4,
-    Active = 5,
-    ActiveDeferred = 6,
+    Init = 2,
+    Armed = 3,
+    Active = 4,
+    ActiveDeferred = 5,
 }
 
 #[derive(Debug)]
