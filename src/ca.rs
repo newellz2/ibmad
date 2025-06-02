@@ -269,43 +269,16 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbCaPort>, io::Erro
                             }
                         }
 
-                        let link_layer_path = entry.path().join(SYS_PORT_LINK_LAYER);
-                        if link_layer_path.exists() {
-                            if let Ok(data) = fs::read_to_string(link_layer_path) {
-                                port.link_layer = Some(data.trim().to_string());
-                            }
-                        }
-
-                        let rate_path = entry.path().join(SYS_PORT_RATE);
-                        if rate_path.exists() {
-                            if let Ok(data) = fs::read_to_string(rate_path) {
-                                port.rate = Some(data.trim().to_string());
-                            }
-                        }
-
-                        let sm_lid_path = entry.path().join(SYS_PORT_SMLID);
-                        if sm_lid_path.exists() {
-                            if let Ok(data) = fs::read_to_string(sm_lid_path) {
-                                if let Ok(v) = data.trim().parse::<u32>() {
-                                    port.sm_lid = v;
-                                }
-                            }
-                        }
-
-                        let sm_sl_path = entry.path().join(SYS_PORT_SMSL);
-                        if sm_sl_path.exists() {
-                            if let Ok(data) = fs::read_to_string(sm_sl_path) {
-                                if let Ok(v) = data.trim().parse::<u8>() {
-                                    port.sm_sl = v;
-                                }
-                            }
-                        }
-
                         for prop in SYS_CA_PORT_PROPERTIES.iter() {
                             let file_path = entry.path().join(prop);
                             if file_path.exists() {
                                 if let Ok(data) = fs::read_to_string(&file_path) {
                                     match *prop {
+                                        SYS_PORT_LINK_LAYER =>  port.link_layer = Some((&data.trim()).to_string()),
+                                        SYS_PORT_RATE =>  port.rate = Some((&data.trim()).to_string()),
+                                        SYS_PORT_SMLID => port.sm_lid = u32::from_str_radix(&data[2..].trim(), 16).unwrap(),
+                                        SYS_PORT_SMSL => port.sm_sl = u8::from_str_radix(&data.trim(), 16).unwrap(),
+                                        SYS_PORT_LID => port.lid = u32::from_str_radix(&data[2..].trim(), 16).unwrap(),
                                         SYS_PORT_LMC => port.lmc = u32::from_str_radix(&data.trim(), 16).unwrap(),
                                         SYS_PORT_CAPMASK => port.cap_mask = u32::from_str_radix(&data[2..].trim(), 16).unwrap(),
                                         SYS_PORT_GID => port.gid = u128::from_str_radix( &data.replace(":", "").trim(), 16).unwrap(),
