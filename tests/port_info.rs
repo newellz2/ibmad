@@ -21,7 +21,7 @@ mod port_info_tests {
                     let p_trimmed = p.trim();
                     let iters = p_trimmed.len() / 2;
                     let mut pos: usize = 0;
-                    for i in 0..iters {
+                    for _i in 0..iters {
                         let hex = &p_trimmed[pos..=pos+1];
                         let val = u8::from_str_radix(hex, 16)
                             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;

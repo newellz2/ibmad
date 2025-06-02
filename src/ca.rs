@@ -29,7 +29,6 @@ const SYS_PORT_STATE: &str = "state"; // Logical State
 const SYS_PORT_PHY_STATE: &str = "phys_state";
 const SYS_PORT_CAPMASK: &str = "cap_mask";
 const SYS_PORT_RATE: &str = "rate";
-const SYS_PORT_GUID: &str = "port_guid";
 const SYS_PORT_GID: &str= "gids/0";
 const SYS_PORT_LINK_LAYER: &str = "link_layer";
 
@@ -42,12 +41,11 @@ const SYS_CA_PROPERTIES: [&str; 8] =  [
     SYS_CA_SYS_GUID, SYS_CA_NODE_DESC,
 ];
 
-const SYS_CA_PORT_PROPERTIES: [&str; 15] =  [
+const SYS_CA_PORT_PROPERTIES: [&str; 10] =  [
     SYS_PORT_LMC, SYS_PORT_SMLID, SYS_PORT_SMSL,
     SYS_PORT_LID, SYS_PORT_STATE, SYS_PORT_PHY_STATE,
-    SYS_PORT_CAPMASK, SYS_PORT_RATE, SYS_PORT_GUID,
-    SYS_PORT_GID, SYS_PORT_LINK_LAYER, SYS_PORT_LMC,
-    SYS_PORT_CAPMASK, SYS_PORT_GUID, SYS_PORT_GID
+    SYS_PORT_CAPMASK, SYS_PORT_RATE,
+    SYS_PORT_GID, SYS_PORT_LINK_LAYER
 ];
 
 const SYS_CA_PORT_COUNTERS_DIR: &str = "counters";
@@ -88,6 +86,9 @@ pub struct IbCaPort {
     pub sm_sl: u8,
     pub state: IbPortLinkLayerState,
     pub lid: u32,
+    pub lmc: u32,
+    pub cap_mask: u32,
+    pub gid: u128,
     pub pkeys: Vec<u64>,
 }
 
@@ -232,6 +233,9 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbCaPort>, io::Erro
                             sm_sl: 0,
                             state: IbPortLinkLayerState::Unknown,
                             lid: 0,
+                            lmc: 0,
+                            cap_mask: 0,
+                            gid: 0,
                             pkeys: Vec::new(),
                         };
 
@@ -296,6 +300,20 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbCaPort>, io::Erro
                                 }
                             }
                         }
+
+                        for prop in SYS_CA_PORT_PROPERTIES.iter() {
+                            let file_path = entry.path().join(prop);
+                            if file_path.exists() {
+                                if let Ok(data) = fs::read_to_string(&file_path) {
+                                    match *prop {
+                                        SYS_PORT_LMC => port.lmc = u32::from_str_radix(&data.trim(), 16).unwrap(),
+                                        SYS_PORT_CAPMASK => port.cap_mask = u32::from_str_radix(&data[2..].trim(), 16).unwrap(),
+                                        SYS_PORT_GID => port.gid = u128::from_str_radix( &data.replace(":", "").trim(), 16).unwrap(),
+                                        _ => {}, // Do Nothing
+                                    }
+                                }
+                            }
+                        };
 
                         let state_path = entry.path().join(SYS_PORT_STATE);
                         if state_path.exists() {
@@ -409,8 +427,6 @@ pub fn get_ca (hca_name: &str) -> Result<IbCa, std::io::Error> {
 
     match hca_path.exists(){
         true => {
-            let path_str = hca_path.to_str().unwrap();
-
             let ports = get_ib_ports_info(&hca_path)?;
             log::trace!("get_ca - get_ib_ports_info result:{:?}", ports);
 
@@ -429,8 +445,7 @@ pub fn get_ca (hca_name: &str) -> Result<IbCa, std::io::Error> {
             };
 
             for prop in SYS_CA_PROPERTIES.iter() {
-                let hca_prop_path = hca_path.join(prop);
-                let file_path = hca_path.join(hca_prop_path);
+                let file_path = hca_path.join(prop);
                 if file_path.exists() {
                     if let Ok(data) = fs::read_to_string(&file_path) {
                         match *prop {
