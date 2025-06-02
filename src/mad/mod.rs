@@ -2,9 +2,11 @@ use std::fs;
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
 use std::{io, mem::MaybeUninit};
+
 use crate::{dump_bytes, ib_user_mad_register_agent};
 use crate::{ca::IbCa, ib_user_mad_enable_pkey, ib_user_mad_reg_req};
 
+pub mod helpers;
 pub mod types;
 pub mod dr_smp;
 pub mod node;
