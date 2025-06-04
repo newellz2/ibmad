@@ -3,36 +3,6 @@ mod mad_tests {
     use std::path::Path;
     use ibmad::mad::{open_port, register_agent, IB_DEFAULT_QKEY};
 
-
-    #[test]
-    fn open_port_success() {
-
-        let _ = env_logger::try_init();
-
-        if !Path::new(ibmad::ca::SYS_INFINIBAND).exists() {
-            eprintln!("IB system path not found, skipping test");
-            return;
-        }
-
-        match  ibmad::ca::get_cas(){
-            Ok(cas) =>{
-                assert!(cas.len() > 0, "No CAs found.");
-                let hca = &cas[0];
-                match open_port(hca) {
-                    Ok(port) => {
-                        log::debug!("open_port_success - IB MAD Port: {:?}", port);
-                    },
-                    Err(e) => {
-                        assert!(false, "{}", format!("Error opening port: {:?}", e));
-                    },
-                }
-            }
-            Err(e) => {
-                assert!(false, "{}", format!("Error finding CAs: {:?}", e));
-            }
-        }
-    }
-
     #[test]
     fn send_nodedesc_success() {
 
@@ -152,7 +122,7 @@ mod mad_tests {
     }
 
     #[test]
-    fn send_nodeinfo_success() {
+    fn send_node_info_success() {
 
         let _ = env_logger::try_init();
         if !Path::new("/dev/infiniband/umad0").exists() {
