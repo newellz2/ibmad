@@ -110,50 +110,79 @@ mod sim_tests {
         let mut fabric = ibmad::sim::Fabric::new(server_file);
 
         {
-            let hca = ibmad::sim::Node::new_hca("host mlx5_0", 0x7ffc_0000_0000_0001);
-            let hca_rc = fabric.add_hca(hca);
-
-            let hca_port = Rc::new(
-                RefCell::new(
-                    ibmad::sim::Port::new_port(1, 1, hca_rc.clone())
-                )
-            );
-                        
-            fabric.dr_paths.insert(
-                [0; 64], 
-                Rc::downgrade(&hca_port)
-            );
-
-            let mut hca_ref = hca_rc.borrow_mut();
-            hca_ref.ports.push(hca_port.clone());
-
-            let switch = ibmad::sim::Node::new_switch("switch-0001", 0x7ffc_0000_0000_0001);
-
-            let switch_rc = fabric.add_switch(switch);
-
-            let mut switch_ref = switch_rc.borrow_mut();
-
-            for i in 0..=65 {
-                let port = Port::new_port(i, 100, switch_rc.clone());
-                switch_ref.ports.push(
-                    Rc::new(
-                        RefCell::new(
-                            port
-                        )
-                    )
+            // build sixteen spine switches for a non blocking fabric
+            let mut spines = Vec::new();
+            for spine_idx in 0..16 {
+                let spine = ibmad::sim::Node::new_switch(
+                    &format!("spine-{}", spine_idx),
+                    0x7ffc_0000_0000_1000 + spine_idx as u64,
                 );
+                let spine_rc = fabric.add_switch(spine);
+                {
+                    let mut spine_ref = spine_rc.borrow_mut();
+                    for i in 0..=65 {
+                        let port = Port::new_port(i, 100, spine_rc.clone());
+                        spine_ref.ports.push(Rc::new(RefCell::new(port)));
+                    }
+                }
+                spines.push(spine_rc);
             }
-            let sw_port_rc = &switch_ref.ports[0];
 
-            let mut sw_port_ref = sw_port_rc.borrow_mut();
+            // create thirty two leaf switches each hosting thirty two HCAs
+            let mut hca_count = 0;
+            for leaf_idx in 0..32 {
+                let leaf = ibmad::sim::Node::new_switch(
+                    &format!("leaf-{}", leaf_idx),
+                    0x7ffc_0000_0000_2000 + leaf_idx as u64,
+                );
+                let leaf_rc = fabric.add_switch(leaf);
+                let mut leaf_ref = leaf_rc.borrow_mut();
+                for i in 0..=65 {
+                    let port = Port::new_port(i as u8, 100, leaf_rc.clone());
+                    leaf_ref.ports.push(Rc::new(RefCell::new(port)));
+                }
 
-            sw_port_ref.remote_port = Some(
-                Rc::downgrade(&hca_port)
-            );
+                // connect leaf to all spines for a non blocking fabric
+                for (spine_idx, spine_rc) in spines.iter().enumerate() {
+                    let spine_port_rc = {
+                        let spine_ref = spine_rc.borrow();
+                        spine_ref.ports[leaf_idx + 1].clone()
+                    };
+                    let leaf_port_rc = leaf_ref.ports[33 + spine_idx].clone();
+                    spine_port_rc
+                        .borrow_mut()
+                        .remote_port = Some(Rc::downgrade(&leaf_port_rc));
+                    leaf_port_rc
+                        .borrow_mut()
+                        .remote_port = Some(Rc::downgrade(&spine_port_rc));
+                }
 
-            let mut hca_port_ref = hca_port.borrow_mut();
+                // each leaf hosts thirty two HCAs on ports 1-32
+                for h in 0..32 {
+                    hca_count += 1;
+                    let hca = ibmad::sim::Node::new_hca(
+                        &format!("host{:04}", hca_count),
+                        0x7ffc_0000_0000_3000 + hca_count as u64,
+                    );
+                    let hca_rc = fabric.add_hca(hca);
+                    let hca_port = Rc::new(RefCell::new(ibmad::sim::Port::new_port(1, 1, hca_rc.clone())));
+                    hca_rc.borrow_mut().ports.push(hca_port.clone());
 
-            hca_port_ref.remote_port = Some(Rc::downgrade(&sw_port_rc));
+                    // connect HCA to leaf
+                    let leaf_hca_port_rc = leaf_ref.ports[h + 1].clone();
+                    leaf_hca_port_rc
+                        .borrow_mut()
+                        .remote_port = Some(Rc::downgrade(&hca_port));
+                    hca_port
+                        .borrow_mut()
+                        .remote_port = Some(Rc::downgrade(&leaf_hca_port_rc));
+
+                    // first HCA becomes the first hop in dr_paths
+                    if hca_count == 1 {
+                        fabric.dr_paths.insert([0; 64], Rc::downgrade(&hca_port));
+                    }
+                }
+            }
         }
 
         let umad = sample_umad(0x0015);
