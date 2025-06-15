@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod sim_tests {
     use std::cell::RefCell;
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::os::fd::{FromRawFd, IntoRawFd};
     use std::rc::Rc;
     use std::os::unix::net::UnixStream;
@@ -9,7 +9,7 @@ mod sim_tests {
 
     use ibmad::sim::Port;
 
-    fn sample_umad_attr(agent_id: u32, attr_id: u16) -> ibmad::mad::ib_user_mad {
+    fn sample_umad_attr(attr_id: u16) -> ibmad::mad::ib_user_mad {
         use ibmad::mad::{dr_smp_mad, ib_mad};
 
         // build DR SMP MAD content
@@ -23,6 +23,7 @@ mod sim_tests {
             return_path: [0; 64],
         };
         dr.initial_path[0] = 0;
+        dr.initial_path[1] = 1;
 
         // embed DR SMP into MAD payload
         let mut mad = ib_mad {
@@ -33,8 +34,8 @@ mod sim_tests {
             status: 0,
             hop_ptr: 0,
             hop_cnt: 0,
-            tid: (0x1337 as u64).to_be(),
-            attr_id: (attr_id as u16).to_be(),
+            tid: 0x1337 as u64,
+            attr_id: attr_id as u16,
             additional_status: 0,
             attr_mod: 0,
             data: [0; 232],
@@ -49,7 +50,7 @@ mod sim_tests {
         mad.data[..dr_bytes.len()].copy_from_slice(dr_bytes);
 
         let mut umad = ibmad::mad::ib_user_mad {
-            agent_id,
+            agent_id: 0,
             status: 0,
             timeout_ms: 50,
             retries: 1,
@@ -83,8 +84,8 @@ mod sim_tests {
         umad
     }
 
-    fn sample_umad(agent_id: u32) -> ibmad::mad::ib_user_mad {
-        sample_umad_attr(agent_id, 0x0010)
+    fn sample_umad(attr_id: u16) -> ibmad::mad::ib_user_mad {
+        sample_umad_attr(attr_id)
     }
 
     #[test]
@@ -155,11 +156,15 @@ mod sim_tests {
             hca_port_ref.remote_port = Some(Rc::downgrade(&sw_port_rc));
         }
 
-        let umad = sample_umad(0x0);
+        let umad = sample_umad(0x0015);
 
         let r = client_file.write(&umad.to_bytes());
 
         let r = fabric.process_one_umad();
+
+        let mut buf: [u8; 320] = [0; 320];
+        let r = client_file.read(&mut buf);
+
 
     }
     

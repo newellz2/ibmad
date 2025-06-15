@@ -1,8 +1,9 @@
-use std::{cell::RefCell, collections::HashMap, fs, io::{self, Read}, rc::{Rc, Weak}};
+use std::{cell::RefCell, collections::HashMap, fs, io::{self, Read, Write}, rc::{Rc, Weak}};
 
 use crate::mad::{self, ib_mad, ib_user_mad, node_info, port_info};
 
 const MIN_UMAD_SIZE: usize = 320;
+const FIRST_HOP: [u8; 64] = [0; 64];
 
 #[derive(Debug, Clone)]
 pub struct Port {
@@ -84,23 +85,86 @@ impl Fabric {
 
         match mad.mgmt_class {
             0x81 =>{
+
+                log::trace!("process_one_umad - DR MAD mgmt_class.");
+
                 // DR MAD
                 let dr_smp = mad::dr_smp_mad::from_bytes(&mad.data).ok_or_else( || {
                     io::Error::new(io::ErrorKind::InvalidData, "Unable to parse DR SMP")
                 })?;
 
-                let port_weak = self.dr_paths.get(&dr_smp.initial_path).ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "Unable to find path.")
+                let mut current_node: Option<Rc<RefCell<Node>>> = None;
 
-                })?;
+                for (index, portnum) in dr_smp.initial_path.iter().enumerate(){
+                    if index == 0 && *portnum == 0 {
+                        let node_weak = self.dr_paths.get(&FIRST_HOP).ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::NotFound, "Unable to find first hop.")
+                        })?;
 
-                let port_rc = port_weak.upgrade().ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::NotFound, "Unable to find node associated with path.")
-                })?;
+                        let first_hop_port = node_weak.upgrade().ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::NotFound, "First hop reference is none.")
+                        })?;
+
+                        let port_ref = first_hop_port.borrow();
+
+                        let port_parent = port_ref.parent.upgrade().ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::NotFound, "Port has no parent.")
+                        })?;
+
+                        current_node = Some(port_parent.clone());
+                        continue;
+                    }
+
+                    if index != 0 && *portnum == 0 {
+                        log::trace!("Encountered zero portnum at index {} — breaking path traversal.", index);
+                        break;
+                    }
+
+                    let node_rc = current_node.as_ref().ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::NotFound, "Current node is none.")
+                    })?;
+
+                    let node_ref = node_rc.borrow();
+
+                    let port_rc = &node_ref.ports.iter().find( | p | {
+                        let port_ref = p.borrow();
+                        port_ref.num == *portnum
+                    }).ok_or_else(||{
+                        io::Error::new(io::ErrorKind::NotFound, "Unable to find port")
+                    })?;
+
+                    let port_ref = port_rc.borrow();
+
+                    let remote_port_weak = port_ref.remote_port.as_ref().ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::NotFound, "Remote port has no reference.")
+                    })?;
+
+                    let remote_port_rc = remote_port_weak.upgrade().ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::NotFound, "Remote port is none.")
+                    })?;
+
+                    let remote_port_ref = remote_port_rc.borrow();
+
+                    match mad.attr_id {
+                        0x0015 => {
+                            log::trace!("process_one_umad - port_info MAD: {:?}", remote_port_ref);
+
+                            let _r = &self.file.write(
+                                &remote_port_ref.port_info.to_bytes()
+                            );
+                        }
+
+                        _ => {}
+                    }
+
+                    log::trace!("process_one_umad - remote port: {:?}", remote_port_ref);
 
 
-                let port_ref = port_rc.borrow();
-                log::trace!(" port: {:?}", port_ref);
+                }
+
+                log::trace!("process_one_umad - last hop node: {:?}", current_node);
+
+
             }
             0x1 =>{
                 // LID Routed
