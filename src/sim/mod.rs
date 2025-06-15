@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::HashMap, fs, io::{self, Read, Write}, rc::{Rc, Weak}};
+use std::{cell::RefCell, collections::HashMap, fs, io::{self, Read, Write}, rc::{Rc, Weak}, sync};
 
 use crate::mad::{self, ib_mad, ib_user_mad, node_info, port_info};
 
@@ -166,9 +166,7 @@ impl Fabric {
 
                         log::trace!("process_one_umad - node_info: {}", node_ref.description);
 
-                        let _r = &self.file.write(
-                            &node_ref.node_info.to_bytes()
-                        );
+
                         let mut resp_umad = umad.clone();
                         let mut resp_mad = mad;
                         let mut resp_dr = dr_smp;
@@ -182,7 +180,11 @@ impl Fabric {
                         let mad_bytes = resp_mad.to_bytes();
                         resp_umad.data[..mad_bytes.len()].copy_from_slice(&mad_bytes);
 
-                        self.file.write(&resp_umad.to_bytes())?;
+                        let bytes = &resp_umad.to_bytes();
+
+                        log::trace!("process_one_umad - node_info bytes: {:?}", bytes);
+
+                        self.file.write(&bytes)?;
                     }
                     0x0015 => {
                         // PortInfo
@@ -225,6 +227,25 @@ impl Fabric {
             _ => {}
         }
 
+        Ok(())
+    }
+
+    pub fn run(&mut self, done: sync::mpsc::Receiver<bool> ) -> Result<(), io::Error>{
+
+        loop {
+            match done.try_recv() {
+                Ok(r) => {
+                    if r == true {
+                        break;
+                    }
+                }
+                Err(_e) =>{
+                    
+                }
+            }
+
+            let _ = self.process_one_umad();
+        }
         Ok(())
     }
 

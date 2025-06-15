@@ -5,7 +5,8 @@ mod sim_tests {
     use std::os::fd::{FromRawFd, IntoRawFd};
     use std::rc::Rc;
     use std::os::unix::net::UnixStream;
-    use std::fs;
+    use std::sync::mpsc::channel;
+    use std::{fs, thread};
 
     use ibmad::sim::Port;
 
@@ -86,27 +87,7 @@ mod sim_tests {
         sample_umad_attr(attr_id, path)
     }
 
-    #[test]
-    fn create_new_fabric_success() {
-        let (client, server) = UnixStream::pair().unwrap();
-
-        let _client_file = unsafe { fs::File::from_raw_fd(client.into_raw_fd()) };
-        let server_file = unsafe { fs::File::from_raw_fd(server.into_raw_fd()) };
-
-        let mut _fabric = ibmad::sim::Fabric::new(server_file);
-    }
-
-    #[test]
-    fn test_dr_mad_success() {
-
-        let _ = env_logger::try_init();
-
-        let (client, server) = UnixStream::pair().unwrap();
-
-        let mut client_file = unsafe { fs::File::from_raw_fd(client.into_raw_fd()) };
-        let server_file = unsafe { fs::File::from_raw_fd(server.into_raw_fd()) };
-        let mut fabric = ibmad::sim::Fabric::new(server_file);
-
+    fn build_fabric(fabric: &mut ibmad::sim::Fabric){
         {
             // build sixteen spine switches
             let mut spines = Vec::new();
@@ -172,7 +153,6 @@ mod sim_tests {
                 }
 
                 // each leaf hosts thirty two HCAs on ports 1-32
-
                 for h in 0..32 {
                     hca_count += 1;
                     let hca = ibmad::sim::Node::new_hca(
@@ -201,6 +181,29 @@ mod sim_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn create_new_fabric_success() {
+        let (client, server) = UnixStream::pair().unwrap();
+
+        let _client_file = unsafe { fs::File::from_raw_fd(client.into_raw_fd()) };
+        let server_file = unsafe { fs::File::from_raw_fd(server.into_raw_fd()) };
+
+        let mut _fabric = ibmad::sim::Fabric::new(server_file);
+    }
+
+    #[test]
+    fn test_dr_mad_success() {
+
+        let _ = env_logger::try_init();
+
+        let (client, server) = UnixStream::pair().unwrap();
+
+        let mut client_file = unsafe { fs::File::from_raw_fd(client.into_raw_fd()) };
+        let server_file = unsafe { fs::File::from_raw_fd(server.into_raw_fd()) };
+        let mut fabric = ibmad::sim::Fabric::new(server_file);
+        build_fabric(&mut fabric);
 
         let mut path: [u8; 64] = [0; 64];
 
@@ -225,11 +228,54 @@ mod sim_tests {
         let mut buf: [u8; 320] = [0; 320];
         let _r = client_file.read(&mut buf);
 
-        let pi_mad = ibmad::mad::port_info::from_bytes(
+        let ni_mad = ibmad::mad::node_info::from_bytes(
             &buf[128..] // 64 + 24 + 40 = 128
         );
 
-        log::debug!("{:?}", pi_mad);
+        log::debug!("Response {:?} : {:?}", ni_mad, buf);
+
+    }
+
+    #[test]
+    fn test_many_dr_mad_success() {
+
+        let _ = env_logger::try_init();
+
+        let (client, server) = UnixStream::pair().unwrap();
+
+        let mut client_file = unsafe { fs::File::from_raw_fd(client.into_raw_fd()) };
+        let server_file = unsafe { fs::File::from_raw_fd(server.into_raw_fd()) };
+
+
+        let (tx, rx) = channel::<bool>();
+        thread::spawn(|| {
+            let mut fabric = ibmad::sim::Fabric::new(server_file);
+            build_fabric(&mut fabric);
+            let _ = fabric.run(rx);
+        });
+        
+        for i in 1..=64 {
+            let mut path: [u8; 64] = [0; 64];
+
+            path[0] = 0;
+            path[1] = 1;
+            path[2] = i;
+
+            // NodeInfo
+            let umad = sample_umad(0x0011, path);
+
+            let _r = client_file.write(&umad.to_bytes());
+                
+            let mut buf: [u8; 320] = [0; 320];
+            let _r = client_file.read(&mut buf);
+
+            let ni_mad = ibmad::mad::node_info::from_bytes(
+                &buf[128..] // 64 + 24 + 40 = 128
+            );
+
+            log::debug!("Response iter={} : {:?} : {:?}", i, ni_mad, buf);
+        }
+        let _ = tx.send(true);
 
     }
     
