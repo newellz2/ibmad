@@ -9,21 +9,19 @@ mod sim_tests {
 
     use ibmad::sim::Port;
 
-    fn sample_umad_attr(attr_id: u16) -> ibmad::mad::ib_user_mad {
+    fn sample_umad_attr(attr_id: u16, path: [u8; 64]) -> ibmad::mad::ib_user_mad {
         use ibmad::mad::{dr_smp_mad, ib_mad};
 
         // build DR SMP MAD content
-        let mut dr = dr_smp_mad {
+        let dr = dr_smp_mad {
             m_key: 0,
             drslid: 0xffff,
             drdlid: 0xffff,
             reserved: [0; 28],
             attr_layout: [0; 64],
-            initial_path: [0; 64],
+            initial_path: path,
             return_path: [0; 64],
         };
-        dr.initial_path[0] = 0;
-        dr.initial_path[1] = 1;
 
         // embed DR SMP into MAD payload
         let mut mad = ib_mad {
@@ -84,8 +82,8 @@ mod sim_tests {
         umad
     }
 
-    fn sample_umad(attr_id: u16) -> ibmad::mad::ib_user_mad {
-        sample_umad_attr(attr_id)
+    fn sample_umad(attr_id: u16, path: [u8; 64]) -> ibmad::mad::ib_user_mad {
+        sample_umad_attr(attr_id, path)
     }
 
     #[test]
@@ -112,6 +110,8 @@ mod sim_tests {
         {
             // build sixteen spine switches for a non blocking fabric
             let mut spines = Vec::new();
+            let mut lid = 2000; // Spines start at 2000
+
             for spine_idx in 0..16 {
                 let spine = ibmad::sim::Node::new_switch(
                     &format!("spine-{}", spine_idx),
@@ -121,15 +121,18 @@ mod sim_tests {
                 {
                     let mut spine_ref = spine_rc.borrow_mut();
                     for i in 0..=65 {
-                        let port = Port::new_port(i, 100, spine_rc.clone());
+                        let port = Port::new_port(i, lid, spine_rc.clone());
                         spine_ref.ports.push(Rc::new(RefCell::new(port)));
                     }
                 }
                 spines.push(spine_rc);
+                lid += 1;
             }
 
             // create thirty two leaf switches each hosting thirty two HCAs
             let mut hca_count = 0;
+            let mut lid = 3000; // Leaf switches start at 3000
+
             for leaf_idx in 0..32 {
                 let leaf = ibmad::sim::Node::new_switch(
                     &format!("leaf-{}", leaf_idx),
@@ -137,10 +140,13 @@ mod sim_tests {
                 );
                 let leaf_rc = fabric.add_switch(leaf);
                 let mut leaf_ref = leaf_rc.borrow_mut();
+
                 for i in 0..=65 {
-                    let port = Port::new_port(i as u8, 100, leaf_rc.clone());
+                    let port = Port::new_port(i as u8, lid, leaf_rc.clone());
                     leaf_ref.ports.push(Rc::new(RefCell::new(port)));
                 }
+
+                lid += 1;
 
                 // connect leaf to all spines for a non blocking fabric
                 for (spine_idx, spine_rc) in spines.iter().enumerate() {
@@ -158,6 +164,7 @@ mod sim_tests {
                 }
 
                 // each leaf hosts thirty two HCAs on ports 1-32
+
                 for h in 0..32 {
                     hca_count += 1;
                     let hca = ibmad::sim::Node::new_hca(
@@ -165,7 +172,9 @@ mod sim_tests {
                         0x7ffc_0000_0000_3000 + hca_count as u64,
                     );
                     let hca_rc = fabric.add_hca(hca);
-                    let hca_port = Rc::new(RefCell::new(ibmad::sim::Port::new_port(1, 1, hca_rc.clone())));
+
+
+                    let hca_port = Rc::new(RefCell::new(ibmad::sim::Port::new_port(1, hca_count + 1, hca_rc.clone())));
                     hca_rc.borrow_mut().ports.push(hca_port.clone());
 
                     // connect HCA to leaf
@@ -185,15 +194,28 @@ mod sim_tests {
             }
         }
 
-        let umad = sample_umad(0x0015);
+        let mut path: [u8; 64] = [0; 64];
 
-        let r = client_file.write(&umad.to_bytes());
+        path[0] = 0;
+        path[1] = 1;
+        path[2] = 34;
+        path[3] = 29;
 
-        let r = fabric.process_one_umad();
+        // NodeInfo
+        let umad = sample_umad(0x0011, path);
+
+        let _r = client_file.write(&umad.to_bytes());
+
+        let _r = fabric.process_one_umad();
 
         let mut buf: [u8; 320] = [0; 320];
-        let r = client_file.read(&mut buf);
+        let _r = client_file.read(&mut buf);
 
+        let pi_mad = ibmad::mad::port_info::from_bytes(
+            &buf[128..] // 64 + 24 + 40 = 128
+        );
+
+        log::debug!("{:?}", pi_mad);
 
     }
     

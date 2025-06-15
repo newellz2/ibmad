@@ -94,6 +94,7 @@ impl Fabric {
                 })?;
 
                 let mut current_node: Option<Rc<RefCell<Node>>> = None;
+                let mut current_port: Option<Rc<RefCell<Port>>> = None;
 
                 for (index, portnum) in dr_smp.initial_path.iter().enumerate(){
                     if index == 0 && *portnum == 0 {
@@ -120,7 +121,7 @@ impl Fabric {
                         break;
                     }
 
-                    let node_rc = current_node.as_ref().ok_or_else(|| {
+                    let node_rc = current_node.clone().ok_or_else(|| {
                         io::Error::new(io::ErrorKind::NotFound, "Current node is none.")
                     })?;
 
@@ -142,27 +143,38 @@ impl Fabric {
                     let remote_port_rc = remote_port_weak.upgrade().ok_or_else(|| {
                         io::Error::new(io::ErrorKind::NotFound, "Remote port is none.")
                     })?;
-
+                    {
                     let remote_port_ref = remote_port_rc.borrow();
 
-                    match mad.attr_id {
-                        0x0015 => {
-                            log::trace!("process_one_umad - port_info MAD: {:?}", remote_port_ref);
+                    let ni_rc = remote_port_ref.parent.upgrade().ok_or_else(|| {
+                        io::Error::new( io::ErrorKind::NotFound, "Parent of port not found.")
+                    })?;
 
-                            let _r = &self.file.write(
-                                &remote_port_ref.port_info.to_bytes()
-                            );
-                        }
-
-                        _ => {}
+                    current_node = Some(ni_rc);
                     }
-
-                    log::trace!("process_one_umad - remote port: {:?}", remote_port_ref);
-
-
+                    current_port = Some(remote_port_rc);
                 }
 
-                log::trace!("process_one_umad - last hop node: {:?}", current_node);
+                match mad.attr_id {
+                    0x0011 => {
+                        // NodeInfo
+                        let node_rc = current_node.ok_or_else(|| {
+                            io::Error::new( io::ErrorKind::NotFound, "Node not found")
+                        })?;
+
+                        let node_ref = node_rc.borrow();
+
+                        log::trace!("process_one_umad - node_info: {}", node_ref.description);
+
+                        let _r = &self.file.write(
+                            &node_ref.node_info.to_bytes()
+                        );
+                    }
+                    0x0015 => {
+                        // PortInfo
+                    }
+                    _ => {}
+                }
 
 
             }
