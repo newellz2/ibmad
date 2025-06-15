@@ -62,50 +62,6 @@ impl Fabric {
         return hca_rc.clone();
     }
 
-    /// Perform a breadth-first traversal of the fabric and print the
-    /// description of every node encountered.  Traversal begins at the
-    /// first hop stored in `dr_paths`.
-    pub fn bfs_print(&self) {
-        use std::collections::{HashSet, VecDeque};
-
-        let start = match self.dr_paths.get(&FIRST_HOP) {
-            Some(p) => match p.upgrade() {
-                Some(port_rc) => match port_rc.borrow().parent.upgrade() {
-                    Some(node_rc) => node_rc,
-                    None => return,
-                },
-                None => return,
-            },
-            None => return,
-        };
-
-        let mut visited: HashSet<u64> = HashSet::new();
-        let mut queue: VecDeque<Rc<RefCell<Node>>> = VecDeque::new();
-
-        let guid = start.borrow().node_info.node_guid;
-        visited.insert(guid);
-        queue.push_back(start);
-
-        while let Some(node_rc) = queue.pop_front() {
-            let node_ref = node_rc.borrow();
-            println!("{}", node_ref.description);
-
-            for port_rc in &node_ref.ports {
-                if let Some(remote_weak) = &port_rc.borrow().remote_port {
-                    if let Some(remote_rc) = remote_weak.upgrade() {
-                        if let Some(remote_node_rc) = remote_rc.borrow().parent.upgrade() {
-                            let remote_guid = remote_node_rc.borrow().node_info.node_guid;
-                            if !visited.contains(&remote_guid) {
-                                visited.insert(remote_guid);
-                                queue.push_back(remote_node_rc);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     pub fn process_one_umad(&mut self) -> Result<(), io::Error> {
         let mut buf: [u8; 320] = [0; 320];
         let r = self.file.read(&mut buf)?;
@@ -213,6 +169,20 @@ impl Fabric {
                         let _r = &self.file.write(
                             &node_ref.node_info.to_bytes()
                         );
+                        let mut resp_umad = umad.clone();
+                        let mut resp_mad = mad;
+                        let mut resp_dr = dr_smp;
+
+                        let ni_bytes = node_ref.node_info.to_bytes();
+                        resp_dr.attr_layout[..ni_bytes.len()].copy_from_slice(&ni_bytes);
+
+                        let dr_bytes = resp_dr.to_bytes();
+                        resp_mad.data[..dr_bytes.len()].copy_from_slice(&dr_bytes);
+
+                        let mad_bytes = resp_mad.to_bytes();
+                        resp_umad.data[..mad_bytes.len()].copy_from_slice(&mad_bytes);
+
+                        self.file.write(&resp_umad.to_bytes())?;
                     }
                     0x0015 => {
                         // PortInfo
@@ -228,7 +198,20 @@ impl Fabric {
                             port_ref.port_info.lid()
                         );
 
-                        let _r = &self.file.write(&port_ref.port_info.to_bytes());
+                        let mut resp_umad = umad.clone();
+                        let mut resp_mad = mad;
+                        let mut resp_dr = dr_smp;
+
+                        let pi_bytes = port_ref.port_info.to_bytes();
+                        resp_dr.attr_layout[..pi_bytes.len()].copy_from_slice(&pi_bytes);
+
+                        let dr_bytes = resp_dr.to_bytes();
+                        resp_mad.data[..dr_bytes.len()].copy_from_slice(&dr_bytes);
+
+                        let mad_bytes = resp_mad.to_bytes();
+                        resp_umad.data[..mad_bytes.len()].copy_from_slice(&mad_bytes);
+
+                        self.file.write(&resp_umad.to_bytes())?;
                     }
                     _ => {}
                 }

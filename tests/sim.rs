@@ -108,7 +108,7 @@ mod sim_tests {
         let mut fabric = ibmad::sim::Fabric::new(server_file);
 
         {
-            // build sixteen spine switches for a non blocking fabric
+            // build sixteen spine switches
             let mut spines = Vec::new();
             let mut lid = 2000; // Spines start at 2000
 
@@ -149,18 +149,26 @@ mod sim_tests {
                 lid += 1;
 
                 // connect leaf to all spines for a non blocking fabric
-                for (spine_idx, spine_rc) in spines.iter().enumerate() {
-                    let spine_port_rc = {
-                        let spine_ref = spine_rc.borrow();
-                        spine_ref.ports[leaf_idx + 1].clone()
-                    };
-                    let leaf_port_rc = leaf_ref.ports[33 + spine_idx].clone();
-                    spine_port_rc
-                        .borrow_mut()
-                        .remote_port = Some(Rc::downgrade(&leaf_port_rc));
-                    leaf_port_rc
-                        .borrow_mut()
-                        .remote_port = Some(Rc::downgrade(&spine_port_rc));
+                for i in 0..2 {
+                    for (spine_idx, spine_rc) in spines.iter().enumerate() {
+                        let base = i * 32;
+
+                        let spine_port_rc = {
+                            let spine_ref = spine_rc.borrow();
+
+                            // Iteration 1: Port 1-32, Iterations 2: Ports 33-64
+                            spine_ref.ports[leaf_idx + 1 + base].clone()
+                        };
+
+                        // Iteration 1: Port 33-48, Iterations 2: Ports 49-64
+                        let leaf_port_rc = leaf_ref.ports[33 + spine_idx + (base/2)].clone();
+                        spine_port_rc
+                            .borrow_mut()
+                            .remote_port = Some(Rc::downgrade(&leaf_port_rc));
+                        leaf_port_rc
+                            .borrow_mut()
+                            .remote_port = Some(Rc::downgrade(&spine_port_rc));
+                    }
                 }
 
                 // each leaf hosts thirty two HCAs on ports 1-32
@@ -198,16 +206,22 @@ mod sim_tests {
 
         path[0] = 0;
         path[1] = 1;
-        path[2] = 34;
-        path[3] = 29;
+        path[2] = 64;
 
         // NodeInfo
         let umad = sample_umad(0x0011, path);
 
         let _r = client_file.write(&umad.to_bytes());
 
-        let _r = fabric.process_one_umad();
+        match fabric.process_one_umad() {
+            Ok(_)=>{
 
+            }
+            Err(e)=>{
+                assert!(false, "{}", format!("{:?}", e))
+            }
+        }
+            
         let mut buf: [u8; 320] = [0; 320];
         let _r = client_file.read(&mut buf);
 
