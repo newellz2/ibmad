@@ -62,6 +62,50 @@ impl Fabric {
         return hca_rc.clone();
     }
 
+    /// Perform a breadth-first traversal of the fabric and print the
+    /// description of every node encountered.  Traversal begins at the
+    /// first hop stored in `dr_paths`.
+    pub fn bfs_print(&self) {
+        use std::collections::{HashSet, VecDeque};
+
+        let start = match self.dr_paths.get(&FIRST_HOP) {
+            Some(p) => match p.upgrade() {
+                Some(port_rc) => match port_rc.borrow().parent.upgrade() {
+                    Some(node_rc) => node_rc,
+                    None => return,
+                },
+                None => return,
+            },
+            None => return,
+        };
+
+        let mut visited: HashSet<u64> = HashSet::new();
+        let mut queue: VecDeque<Rc<RefCell<Node>>> = VecDeque::new();
+
+        let guid = start.borrow().node_info.node_guid;
+        visited.insert(guid);
+        queue.push_back(start);
+
+        while let Some(node_rc) = queue.pop_front() {
+            let node_ref = node_rc.borrow();
+            println!("{}", node_ref.description);
+
+            for port_rc in &node_ref.ports {
+                if let Some(remote_weak) = &port_rc.borrow().remote_port {
+                    if let Some(remote_rc) = remote_weak.upgrade() {
+                        if let Some(remote_node_rc) = remote_rc.borrow().parent.upgrade() {
+                            let remote_guid = remote_node_rc.borrow().node_info.node_guid;
+                            if !visited.contains(&remote_guid) {
+                                visited.insert(remote_guid);
+                                queue.push_back(remote_node_rc);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     pub fn process_one_umad(&mut self) -> Result<(), io::Error> {
         let mut buf: [u8; 320] = [0; 320];
         let r = self.file.read(&mut buf)?;
@@ -172,6 +216,19 @@ impl Fabric {
                     }
                     0x0015 => {
                         // PortInfo
+                        let port_rc = current_port.ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::NotFound, "Port not found")
+                        })?;
+
+                        let port_ref = port_rc.borrow();
+
+                        log::trace!(
+                            "process_one_umad - port_info: port {} lid {}",
+                            port_ref.num,
+                            port_ref.port_info.lid()
+                        );
+
+                        let _r = &self.file.write(&port_ref.port_info.to_bytes());
                     }
                     _ => {}
                 }
@@ -197,6 +254,15 @@ impl Port {
 
         port_info.set_local_portnum(num);
         port_info.set_lid(lid);
+        // Default simulated ports come up active with basic link parameters
+        port_info.set_port_state(4); // ACTIVE
+        port_info.set_port_physical_state(5); // LINK_UP
+        port_info.set_link_speed_supported(1);
+        port_info.set_link_speed_enabled(1);
+        port_info.set_link_speed_active(1);
+        port_info.set_link_width_supported(1);
+        port_info.set_link_width_enabled(1);
+        port_info.set_link_width_active(1);
 
         let port = Port{
             num: num,
