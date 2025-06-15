@@ -8,7 +8,7 @@ pub const IB_IOCTL_REG_AGENT2: u64 = 4;
 
 pub mod ca;
 pub mod mad;
-
+pub mod sim;
 
 #[derive(Debug, Clone)]
 #[repr(C)]
