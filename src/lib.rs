@@ -6,9 +6,12 @@ pub const IB_IOCTL_UNREG_AGENT: u64 = 2;
 pub const IB_IOCTL_EN_PKEY: u8 = 3;
 pub const IB_IOCTL_REG_AGENT2: u64 = 4;
 
+pub mod enums;
 pub mod ca;
 pub mod mad;
+pub mod discovery;
 pub mod sim;
+
 
 #[derive(Debug, Clone)]
 #[repr(C)]

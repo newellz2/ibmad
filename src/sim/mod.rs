@@ -244,7 +244,19 @@ impl Fabric {
                 }
             }
 
-            let _ = self.process_one_umad();
+            let r = self.process_one_umad();
+            
+            match r {
+                Ok(_) =>{}
+                Err(e) => {
+                        log::trace!(
+                            "run - process MAD error: {:?}",
+                            e
+                        );
+
+                }
+                
+            }
         }
         Ok(())
     }

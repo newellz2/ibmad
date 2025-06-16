@@ -7,6 +7,8 @@ use std::path::PathBuf;
 
 use log;
 
+use crate::enums;
+
 pub const SYS_INFINIBAND: &str = "/sys/class/infiniband";
 
 
@@ -51,40 +53,16 @@ const SYS_CA_PORT_PROPERTIES: [&str; 10] =  [
 const SYS_CA_PORT_COUNTERS_DIR: &str = "counters";
 const SYS_CA_PORT_HW_COUNTERS_DIR: &str = "hw_counters";
 
-
-#[derive(Debug)]
-pub enum IbPortPhyState {
-    Unknown = -1,
-    Sleep = 1,
-    Polling = 2,
-    Disabled = 3,
-    PortConfigurationTraining = 4,
-    LinkUp = 5,
-    LinkErrorRecovery = 6,
-    PhyTest = 7,
-}
-
-#[derive(Debug)]
-pub enum IbPortLinkLayerState {
-    Unknown = -1,
-    Nop = 0,
-    Down= 1,
-    Init = 2,
-    Armed = 3,
-    Active = 4,
-    ActiveDeferred = 5,
-}
-
 #[derive(Debug)]
 pub struct IbCaPort {
     pub path: String,
     pub number: u32,
-    pub phy_state: IbPortPhyState,
+    pub phy_state: enums::IbPortPhyState,
     pub link_layer: Option<String>,
     pub rate: Option<String>,
     pub sm_lid: u32,
     pub sm_sl: u8,
-    pub state: IbPortLinkLayerState,
+    pub state: enums::IbPortLinkLayerState,
     pub lid: u32,
     pub lmc: u32,
     pub cap_mask: u32,
@@ -203,7 +181,6 @@ pub fn get_cas_names() -> Result<Vec<String>, std::io::Error> {
     Ok(cas)
 }
 
-
 pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbCaPort>, io::Error> {
 
     let mut ports: Vec<IbCaPort> = Vec::new();
@@ -226,12 +203,12 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbCaPort>, io::Erro
                         let mut port = IbCaPort{
                             path: entry.path().to_str().unwrap().to_owned(),
                             number: 0,
-                            phy_state: IbPortPhyState::Unknown,
+                            phy_state: enums::IbPortPhyState::Unknown,
                             link_layer: None,
                             rate: None,
                             sm_lid: 0,
                             sm_sl: 0,
-                            state: IbPortLinkLayerState::Unknown,
+                            state: enums::IbPortLinkLayerState::Unknown,
                             lid: 0,
                             lmc: 0,
                             cap_mask: 0,
@@ -261,11 +238,11 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbCaPort>, io::Erro
                         match phy_state_str.split(':').next().unwrap_or("-1") {
                             "5" => {
                                 log::trace!("get_ib_ports_info - Port '{}' has LinkUp state.", phy_state_str);
-                                port.phy_state = IbPortPhyState::LinkUp;
+                                port.phy_state = enums::IbPortPhyState::LinkUp;
                             }
                             _ => {
                                 log::trace!("get_ib_ports_info - Port '{}' has unknown state.", phy_state_str);
-                                port.phy_state = IbPortPhyState::Unknown;
+                                port.phy_state = enums::IbPortPhyState::Unknown;
                             }
                         }
 
@@ -293,13 +270,13 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbCaPort>, io::Erro
                             if let Ok(data) = fs::read_to_string(state_path) {
                                 let state_str = data.trim();
                                 match state_str.split(':').next().unwrap_or("-1") {
-                                    "0" => port.state = IbPortLinkLayerState::Nop,
-                                    "1" => port.state = IbPortLinkLayerState::Down,
-                                    "2" => port.state = IbPortLinkLayerState::Init,
-                                    "3" => port.state = IbPortLinkLayerState::Armed,
-                                    "4" => port.state = IbPortLinkLayerState::Active,
-                                    "5" => port.state = IbPortLinkLayerState::ActiveDeferred,
-                                    _ => port.state = IbPortLinkLayerState::Unknown,
+                                    "0" => port.state = enums::IbPortLinkLayerState::Nop,
+                                    "1" => port.state = enums::IbPortLinkLayerState::Down,
+                                    "2" => port.state = enums::IbPortLinkLayerState::Init,
+                                    "3" => port.state = enums::IbPortLinkLayerState::Armed,
+                                    "4" => port.state = enums::IbPortLinkLayerState::Active,
+                                    "5" => port.state = enums::IbPortLinkLayerState::ActiveDeferred,
+                                    _ => port.state = enums::IbPortLinkLayerState::Unknown,
                                 }
                             }
                         }
