@@ -1,6 +1,9 @@
 use std::{cell::RefCell, collections::{HashMap, HashSet, VecDeque}, io, rc::{Rc, Weak}};
 
-use crate::{enums, mad::{self, ib_mad_addr, ib_user_mad, node_info, IbMadPort}};
+use crate::{
+    enums,
+    mad::{self, ib_mad_addr, ib_user_mad, node_info, port_info, IbMadPort},
+};
 
 const START_PATH: [u8; 64] = [0; 64];
 
@@ -121,7 +124,7 @@ impl Fabric {
     }
 
     pub fn query_portinfo(&mut self, path: [u8; 64], portnum: u8 ) -> Result<ib_user_mad, io::Error> {
-        let umad =  self.build_dr_smp_umad( path, enums::SmiAttrID::NodeInfo, portnum as u32);
+        let umad =  self.build_dr_smp_umad( path, enums::SmiAttrID::PortInfo, portnum as u32);
         let _s = mad::send(&mut self.port, &umad)?;
 
         Ok(umad)
@@ -140,24 +143,64 @@ impl Fabric {
 
     pub fn discover(&mut self) -> Result<(), io::Error> {
         let mut visited: HashSet<u64> = HashSet::new();
-        let mut queue: VecDeque<Rc<RefCell<Node>>> = VecDeque::new();
+        let mut queue: VecDeque<[u8; 64]> = VecDeque::new();
 
-        let sent_umad = self.query_nodeinfo(START_PATH)?;
-        log::debug!("First-hop send NodeInfo: {:?}", sent_umad);
-        let recv_umad = self.recv_smp()?;
+        queue.push_back(START_PATH);
 
-        let ni = node_info::from_bytes(&recv_umad.data[64..]).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "Could not parse NodeInfo data.")
-        })?;
-        log::debug!("First-hop recv NodeInfo: {:?}", ni);
+        while let Some(path) = queue.pop_front() {
+            // Query NodeInfo for the node at the end of this path
+            let sent_umad = self.query_nodeinfo(path)?;
+            log::debug!("send NodeInfo: {:?}", sent_umad);
+            let recv_umad = self.recv_smp()?;
 
-        let local_port = ni.local_port;
+            let ni = node_info::from_bytes(&recv_umad.data[64..]).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "Could not parse NodeInfo data.")
+            })?;
+            log::debug!("recv NodeInfo: {:?}", ni);
 
-        let sent_umad = self.query_portinfo(START_PATH,  local_port as u8)?;
-        log::debug!("First-hop send PortInfo: {:?}", sent_umad);
+            if visited.contains(&ni.node_guid) {
+                continue;
+            }
+            visited.insert(ni.node_guid);
 
-        let recv_umad = self.recv_smp()?;
-        log::debug!("First-hop recv PortInfo: {:?}", recv_umad);
+            let node_type = match ni.node_type {
+                1 => enums::IbNodeType::CA,
+                2 => enums::IbNodeType::Switch,
+                3 => enums::IbNodeType::Router,
+                4 => enums::IbNodeType::Rnic,
+                _ => enums::IbNodeType::CA,
+            };
+
+            let node_rc = Rc::new(RefCell::new(Node {
+                lid: 0,
+                node_type: node_type.clone(),
+                description: format!("0x{:x}", ni.node_guid),
+                ports: Vec::new(),
+            }));
+
+            self.nodes.push(node_rc.clone());
+            match node_type {
+                enums::IbNodeType::Switch => self.switches.push(Rc::downgrade(&node_rc)),
+                _ => self.hcas.push(Rc::downgrade(&node_rc)),
+            }
+
+            // Explore all ports on this node
+            for port in 1..=ni.nports {
+                let mut next_path = path;
+                for i in 1..64 {
+                    if next_path[i] == 0 {
+                        next_path[i] = port;
+                        break;
+                    }
+                }
+
+                let sent_umad = self.query_portinfo(next_path, port as u8)?;
+                log::debug!("send PortInfo: {:?}", sent_umad);
+                let _ = self.recv_smp()?; // PortInfo response ignored for now
+
+                queue.push_back(next_path);
+            }
+        }
 
         Ok(())
     }
