@@ -158,7 +158,9 @@ impl Fabric {
             })?;
             log::debug!("recv NodeInfo: {:?}", ni);
 
-            if visited.contains(&ni.node_guid) {
+            let guid = ni.node_guid;
+
+            if visited.contains(&guid) {
                 continue;
             }
             visited.insert(ni.node_guid);
@@ -171,21 +173,29 @@ impl Fabric {
                 _ => enums::IbNodeType::CA,
             };
 
+
             let node_rc = Rc::new(RefCell::new(Node {
                 lid: 0,
                 node_type: node_type.clone(),
-                description: format!("0x{:x}", ni.node_guid),
+                description: format!("0x{:x}", guid),
                 ports: Vec::new(),
             }));
 
             self.nodes.push(node_rc.clone());
+
+            let mut nports = ni.nports;
+
             match node_type {
-                enums::IbNodeType::Switch => self.switches.push(Rc::downgrade(&node_rc)),
+                enums::IbNodeType::Switch => { 
+                    nports -= 1;
+                    self.switches.push(Rc::downgrade(&node_rc))
+
+                },
                 _ => self.hcas.push(Rc::downgrade(&node_rc)),
             }
 
             // Explore all ports on this node
-            for port in 1..=ni.nports {
+            for port in 1..=nports {
                 let mut next_path = path;
                 for i in 1..64 {
                     if next_path[i] == 0 {
@@ -195,12 +205,15 @@ impl Fabric {
                 }
 
                 let sent_umad = self.query_portinfo(next_path, port as u8)?;
-                log::debug!("send PortInfo: {:?}", sent_umad);
+                log::debug!("send PortInfo: {:?}, port: {}", sent_umad, port);
                 let _ = self.recv_smp()?; // PortInfo response ignored for now
 
                 queue.push_back(next_path);
             }
         }
+
+        log::debug!("Discovered {} switches", &self.switches.len());
+        log::debug!("Discovered {} nodes", &self.nodes.len());
 
         Ok(())
     }

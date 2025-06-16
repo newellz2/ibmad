@@ -25,7 +25,7 @@ mod discovery_tests {
                 let spine_rc = fabric.add_switch(spine);
                 {
                     let mut spine_ref = spine_rc.borrow_mut();
-                    for i in 0..=65 {
+                    for i in 0..65 {
                         let port = Port::new_port(i, lid, spine_rc.clone());
                         spine_ref.ports.push(Rc::new(RefCell::new(port)));
                     }
@@ -46,7 +46,7 @@ mod discovery_tests {
                 let leaf_rc = fabric.add_switch(leaf);
                 let mut leaf_ref = leaf_rc.borrow_mut();
 
-                for i in 0..=65 {
+                for i in 0..65 {
                     let port = Port::new_port(i as u8, lid, leaf_rc.clone());
                     leaf_ref.ports.push(Rc::new(RefCell::new(port)));
                 }
