@@ -227,7 +227,7 @@ mod mad_io_tests {
         port.file.seek(SeekFrom::Start(0)).unwrap();
 
         let mut recv_umad = sample_umad(0);
-        let res = ibmad::mad::recv(&mut port, &mut recv_umad).unwrap();
+        let res = ibmad::mad::recv(&mut port, &mut recv_umad, 1000).unwrap();
         assert_eq!(res, std::mem::size_of::<ib_user_mad>());
 
         let dr: &ibmad::mad::dr_smp_mad = unsafe {
@@ -277,7 +277,7 @@ mod mad_io_tests {
 
         // recv
         let mut recv_umad = sample_umad(0);
-        let res = ibmad::mad::recv(&mut port, &mut recv_umad).unwrap();
+        let res = ibmad::mad::recv(&mut port, &mut recv_umad, 1000).unwrap();
 
         assert_eq!(res, std::mem::size_of::<ib_user_mad>());
 
@@ -339,7 +339,7 @@ mod mad_io_tests {
         port.file.seek(SeekFrom::Start(0)).unwrap();
 
         let mut recv_umad = sample_umad_attr(0, 0x0011);
-        let res = ibmad::mad::recv(&mut port, &mut recv_umad).unwrap();
+        let res = ibmad::mad::recv(&mut port, &mut recv_umad, 1000).unwrap();
         assert_eq!(res, std::mem::size_of::<ib_user_mad>());
 
         let dr: &ibmad::mad::dr_smp_mad = unsafe {

@@ -205,12 +205,11 @@ mod port_info_tests {
                                 },
                             }
 
-                            let _ = ibmad::mad::recv(&mut port, &mut umad);
+                            let _ = ibmad::mad::recv(&mut port, &mut umad, 1000);
 
                             let pi_mad = port_info::from_bytes(&umad.data[64..]).unwrap();
 
                             log::debug!("tests - send_dr_port_info_success -  Sending MAD Failed: {:?}", pi_mad);
-
                             log::debug!("tests - send_dr_port_info_success -  pi_mad.lid: {}", pi_mad.lid());
                             log::debug!("tests - send_dr_port_info_success -  pi_mad.master_sm_lid: {}", pi_mad.master_sm_lid());
 

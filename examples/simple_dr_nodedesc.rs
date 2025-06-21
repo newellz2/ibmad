@@ -94,7 +94,7 @@ fn main() {
                         },
                     }
 
-                    let _ = ibmad::mad::recv(&mut port, &mut umad);
+                    let _ = ibmad::mad::recv(&mut port, &mut umad, 1000);
 
                     let dr: &ibmad::mad::dr_smp_mad = unsafe {
                         &*(umad.data[24..].as_ptr() as *const ibmad::mad::dr_smp_mad)

@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, AsRawFd};
 use std::{io, mem::MaybeUninit};
 
 use crate::{dump_bytes, ib_user_mad_register_agent};
@@ -16,6 +16,8 @@ pub use types::{ib_mad, ib_mad_addr, ib_user_mad};
 pub use dr_smp::dr_smp_mad;
 pub use node::node_info;
 pub use port::port_info;
+
+use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 
 pub const IB_MGMT_CLASS_PERFORMANCE: u8 = 0x4;
 pub const IB_MGMT_CLASS_LID_ROUTED_SMP: u8 = 0x1;
@@ -109,23 +111,38 @@ pub fn send(port: &mut IbMadPort, umad: &ib_user_mad) -> io::Result<usize> {
     port.file.write(&bytes)
 }
 
-pub fn recv(port: &mut IbMadPort, umad: &mut ib_user_mad) -> io::Result<usize> {
-    if port.file.as_raw_fd() < 0 {
+pub fn recv(port: &mut IbMadPort, umad: &mut ib_user_mad, timeout_ms: u32) -> io::Result<usize> {
+
+    let fd = port.file.as_fd();
+
+    if fd.as_raw_fd() < 0 {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid file descriptor"));
     }
+
+    let poll_timeout = PollTimeout::try_from(timeout_ms).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let mut poll_fd: [PollFd<'_>; 1] = [PollFd::new(fd, PollFlags::POLLIN)];
+
+    let rc = poll(&mut poll_fd, poll_timeout).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    if rc == 0 {
+        return Err(
+            io::Error::new(io::ErrorKind::TimedOut, "read timeout")
+        );
+    }
+
     let mut buf = vec![0u8; std::mem::size_of::<ib_user_mad>()];
+
     let rc = port.file.read(&mut buf)?;
-    log::debug!("recv - MAD bytes:\n{}", dump_bytes(&buf));
+
+    log::debug!("recv - MAD bytes: length ({}) \n{}", buf.len(), dump_bytes(&buf));
+
     if rc != buf.len() {
-        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "short read"));
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, format!("short read timeout, bytes read: {}, expected: {}", rc, buf.len())));
     }
     if let Some(val) = ib_user_mad::from_bytes(&buf) {
         *umad = val;
     } else {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "length incorrect"));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "error converting to umad"));
     }
-    if umad.length as usize != umad.data.len() {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "length incorrect"));
-    }
+
     Ok(rc)
 }

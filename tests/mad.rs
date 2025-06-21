@@ -106,7 +106,7 @@ mod mad_tests {
                                 },
                             }
 
-                            let _ = ibmad::mad::recv(&mut port, &mut umad);
+                            let _ = ibmad::mad::recv(&mut port, &mut umad, 1000);
 
                         }
                     },
@@ -224,7 +224,7 @@ mod mad_tests {
                                 },
                             }
 
-                            let _ = ibmad::mad::recv(&mut port, &mut umad);
+                            let _ = ibmad::mad::recv(&mut port, &mut umad, 1000);
 
                             let umad_bytes: &[u8] = unsafe {
                                 std::slice::from_raw_parts(
