@@ -136,7 +136,7 @@ pub fn recv(port: &mut IbMadPort, umad: &mut ib_user_mad, timeout_ms: u32) -> io
     log::debug!("recv - MAD bytes: length ({}) \n{}", buf.len(), dump_bytes(&buf));
 
     if rc != buf.len() {
-        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, format!("short read timeout, bytes read: {}, expected: {}", rc, buf.len())));
+        return Err(io::Error::new(io::ErrorKind::TimedOut, format!("short read timeout, bytes read: {}, expected: {}", rc, buf.len())));
     }
     if let Some(val) = ib_user_mad::from_bytes(&buf) {
         *umad = val;

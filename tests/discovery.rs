@@ -138,18 +138,23 @@ mod discovery_tests {
 
         let mut fabric = ibmad::discovery::Fabric{
             port: port,
+            node_map: HashMap::new(),
+            nodes: Vec::new(),
             hcas: Vec::new(),
             switches: Vec::new(),
-            nodes: Vec::new(),
             dr_paths: HashMap::new(),
-            timeout: 50,
+            ni_timings: Vec::new(),
+            retries: 3,
+            timeout: 1,
+            mad_errors: 0,
             mad_timeouts: 0,
+            mads_sent: 0,
             tid: 1,
         };
 
         barrier.wait();
 
-        //let _ = fabric.discover();
+        let _ = fabric.discover();
 
         let _ = tx.send(true);
 
@@ -170,12 +175,17 @@ mod discovery_tests {
                                 let _ = mad::register_agent(&mut port, 0x81);
                                 let mut fabric = ibmad::discovery::Fabric{
                                     port: port,
+                                    node_map: HashMap::new(),
+                                    nodes: Vec::new(),
                                     hcas: Vec::new(),
                                     switches: Vec::new(),
-                                    nodes: Vec::new(),
                                     dr_paths: HashMap::new(),
-                                    timeout: 1000,
+                                    ni_timings: Vec::new(),
+                                    retries: 1,
+                                    timeout: 4,
+                                    mad_errors: 0,
                                     mad_timeouts: 0,
+                                    mads_sent: 0,
                                     tid: 1,
                                 };
 

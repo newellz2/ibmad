@@ -203,12 +203,12 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbCaPort>, io::Erro
                         let mut port = IbCaPort{
                             path: entry.path().to_str().unwrap().to_owned(),
                             number: 0,
-                            phy_state: enums::IbPortPhyState::Unknown,
+                            phy_state: enums::IbPortPhyState::Polling,
                             link_layer: None,
                             rate: None,
                             sm_lid: 0,
                             sm_sl: 0,
-                            state: enums::IbPortLinkLayerState::Unknown,
+                            state: enums::IbPortLinkLayerState::Down,
                             lid: 0,
                             lmc: 0,
                             cap_mask: 0,
@@ -242,7 +242,7 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbCaPort>, io::Erro
                             }
                             _ => {
                                 log::trace!("get_ib_ports_info - Port '{}' has unknown state.", phy_state_str);
-                                port.phy_state = enums::IbPortPhyState::Unknown;
+                                port.phy_state = enums::IbPortPhyState::Polling;
                             }
                         }
 
@@ -276,7 +276,7 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbCaPort>, io::Erro
                                     "3" => port.state = enums::IbPortLinkLayerState::Armed,
                                     "4" => port.state = enums::IbPortLinkLayerState::Active,
                                     "5" => port.state = enums::IbPortLinkLayerState::ActiveDeferred,
-                                    _ => port.state = enums::IbPortLinkLayerState::Unknown,
+                                    _ => port.state = enums::IbPortLinkLayerState::Down,
                                 }
                             }
                         }

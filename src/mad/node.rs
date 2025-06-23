@@ -1,5 +1,9 @@
 use std::mem::MaybeUninit;
 
+
+pub const NODE_DESC_OFFSET: usize = 24;
+pub const NODE_DESC_LENGTH: usize = 64;
+
 #[repr(C, packed)]
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 #[allow(non_camel_case_types)]

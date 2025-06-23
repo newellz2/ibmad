@@ -1,4 +1,4 @@
-use std::mem::MaybeUninit;
+use std::{io, mem::MaybeUninit};
 
 #[derive(Debug, Copy, Clone)]
 #[repr(C, packed)]
@@ -81,6 +81,27 @@ impl ib_user_mad {
                 std::mem::size_of::<ib_user_mad>(),
             );
             Some(val.assume_init())
+        }
+    }
+
+    pub fn get_tid(&self) -> Result<u64, io::Error> {
+        let tid_offset = 8;
+        let tid_end = tid_offset + 8;
+
+        if self.data.len() < tid_end {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Data too short for TID"));
+        }
+        
+        let tid_bytes: [u8; 8] = self.data[tid_offset..tid_end].try_into().unwrap();
+        Ok(u64::from_be_bytes(tid_bytes))
+    }
+
+    pub fn is_tid_equal(&self, other: &ib_user_mad) -> bool {
+        match (self.get_tid(), other.get_tid()) {
+            (Ok(self_tid), Ok(other_tid)) => {
+                self_tid & 0x0000_0000_ffff_ffff == other_tid & 0x0000_0000_ffff_ffff
+            },
+            _ => false,
         }
     }
 }
