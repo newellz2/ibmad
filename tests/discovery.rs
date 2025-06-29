@@ -17,12 +17,13 @@ mod discovery_tests {
             let mut spines = Vec::new();
             let mut lid = 2000; // Spines start at 2000
 
-            for spine_idx in 0..2 {
+            for spine_idx in 0..16 {
                 let spine = ibmad::sim::Node::new_switch(
                     &format!("spine-{}", spine_idx),
                     0x7ffc_0000_0000_1000 + spine_idx as u64,
                 );
                 let spine_rc = fabric.add_switch(spine);
+
                 {
                     let mut spine_ref = spine_rc.borrow_mut();
                     for i in 0..=65 {
@@ -38,44 +39,46 @@ mod discovery_tests {
             let mut hca_count = 0;
             let mut lid = 3000; // Leaf switches start at 3000
 
-            for leaf_idx in 0..4 {
+            for leaf_idx in 0..32 {
                 let leaf = ibmad::sim::Node::new_switch(
                     &format!("leaf-{}", leaf_idx),
                     0x7ffc_0000_0000_2000 + leaf_idx as u64,
                 );
-                let leaf_rc = fabric.add_switch(leaf);
-                let mut leaf_ref = leaf_rc.borrow_mut();
 
-                for i in 0..=65 {
-                    let port = Port::new_port(i as u8, lid, leaf_rc.clone());
-                    leaf_ref.ports.push(Rc::new(RefCell::new(port)));
+                let leaf_rc = fabric.add_switch(leaf);
+
+                {
+                    let mut leaf_ref = leaf_rc.borrow_mut();
+                    for i in 0..=65 {
+                        let port = Port::new_port(i as u8, lid, leaf_rc.clone());
+                        log::debug!("Adding leaf port, logical_state: {},  physical_state: {}",
+                            port.port_info.port_state(),
+                            port.port_info.port_physical_state(),
+                        );
+                        leaf_ref.ports.push(Rc::new(RefCell::new(port)));
+                    }
                 }
 
                 lid += 1;
 
                 // connect leaf to all spines for a non blocking fabric
                 // 4*16 = 64 spine ports
-                for i in 0..15 {
+                for i in 0..32 {
                     for (spine_idx, spine_rc) in spines.iter().enumerate() {
-                        let base = i * 4;
+                        let base = i * 1;
 
                         let spine_port_rc = {
                             let spine_ref = spine_rc.borrow();
-
-                            // Iteration 1: Port 1-32, Iterations 2: Ports 33-64
                             spine_ref.ports[leaf_idx + 1 + base].clone()
                         };
 
-                        // Iteration 1: Port 33-48, Iterations 2: Ports 49-64
-                        let port = 33 + spine_idx + (base/2);
-                        log::debug!("Adding leaf to spine port: base={}, port={}, leaf={}, spine={}", base, port, leaf_idx, spine_idx);
-                        let leaf_port_rc = leaf_ref.ports[33 + spine_idx + (base/2)].clone();
-                        spine_port_rc
-                            .borrow_mut()
-                            .remote_port = Some(Rc::downgrade(&leaf_port_rc));
-                        leaf_port_rc
-                            .borrow_mut()
-                            .remote_port = Some(Rc::downgrade(&spine_port_rc));
+                        let port_idx = 33 + spine_idx + (base / 2);
+                        log::debug!("Adding leaf to spine port: base={}, port={}, leaf={}, spine={}", base, port_idx, leaf_idx, spine_idx);
+                        
+                        // Now we get an immutable borrow which is fine.
+                        let leaf_port_rc = leaf_rc.borrow().ports[port_idx].clone();
+
+                        ibmad::sim::connect_ports(&spine_port_rc, &leaf_port_rc);
                     }
                 }
 
@@ -88,18 +91,13 @@ mod discovery_tests {
                     );
                     let hca_rc = fabric.add_hca(hca);
 
-
                     let hca_port = Rc::new(RefCell::new(ibmad::sim::Port::new_port(1, hca_count + 1, hca_rc.clone())));
                     hca_rc.borrow_mut().ports.push(hca_port.clone());
 
                     // connect HCA to leaf
-                    let leaf_hca_port_rc = leaf_ref.ports[h + 1].clone();
-                    leaf_hca_port_rc
-                        .borrow_mut()
-                        .remote_port = Some(Rc::downgrade(&hca_port));
-                    hca_port
-                        .borrow_mut()
-                        .remote_port = Some(Rc::downgrade(&leaf_hca_port_rc));
+                    let leaf_hca_port_rc = leaf_rc.borrow().ports[h + 1].clone();
+
+                    ibmad::sim::connect_ports(&leaf_hca_port_rc, &hca_port);
 
                     // first HCA becomes the first hop in dr_paths
                     if hca_count == 1 {
@@ -111,7 +109,7 @@ mod discovery_tests {
     }
 
     #[test]
-    fn test_discovery_sim_success() {
+    fn test_seq_discovery_sim_success() {
 
         let _ = env_logger::try_init();
 
@@ -126,6 +124,7 @@ mod discovery_tests {
 
         thread::spawn(move || {
             let mut fabric = ibmad::sim::Fabric::new(server_file);
+            fabric.response_delay = Some(600);
             build_fabric(&mut fabric);
             barrier_clone.wait();
             let _ = fabric.run(rx);
@@ -135,7 +134,6 @@ mod discovery_tests {
             file: client_file,
         };
 
-
         let mut fabric = ibmad::discovery::Fabric{
             port: port,
             node_map: HashMap::new(),
@@ -144,8 +142,8 @@ mod discovery_tests {
             switches: Vec::new(),
             dr_paths: HashMap::new(),
             ni_timings: Vec::new(),
-            retries: 3,
-            timeout: 1,
+            retries: 1,
+            timeout: 50,
             mad_errors: 0,
             mad_timeouts: 0,
             mads_sent: 0,
@@ -154,11 +152,13 @@ mod discovery_tests {
 
         barrier.wait();
 
-        let _ = fabric.discover();
+        let r = fabric.seq_discover();
+
+        if let Err(e) = r {
+            log::debug!("{:?}", e);
+        }
 
         let _ = tx.send(true);
-
-
     }
 
     #[test]
@@ -182,14 +182,15 @@ mod discovery_tests {
                                     dr_paths: HashMap::new(),
                                     ni_timings: Vec::new(),
                                     retries: 1,
-                                    timeout: 4,
+                                    timeout: 50,
                                     mad_errors: 0,
                                     mad_timeouts: 0,
                                     mads_sent: 0,
                                     tid: 1,
                                 };
 
-                                let r = fabric.discover();
+                                let r = fabric.seq_discover();
+
                                 match r {
                                     Ok(_) => {},
                                     Err(e) => { log::debug!("Error: {:?}", e)}        

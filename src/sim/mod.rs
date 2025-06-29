@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::HashMap, fs, io::{self, Read, Write}, rc::{Rc, Weak}, sync};
+use std::{cell::RefCell, collections::HashMap, fs, io::{self, Read, Write}, rc::{Rc, Weak}, sync, time};
 
 use crate::mad::{self, ib_mad, ib_user_mad, node_info, port_info};
 
@@ -26,17 +26,47 @@ pub struct Fabric {
     pub nodes: Vec<Rc<RefCell<Node>>>,
     pub switches: Vec<Weak<RefCell<Node>>>,
     pub hcas: Vec<Weak<RefCell<Node>>>,
-    pub dr_paths: HashMap<[u8; 64], Weak<RefCell<Port>>>
+    pub dr_paths: HashMap<[u8; 64], Weak<RefCell<Port>>>,
+    pub response_delay: Option<u64>
+}
+
+pub fn connect_ports(port_a_rc: &Rc<RefCell<Port>>, port_b_rc: &Rc<RefCell<Port>>) {
+    let mut port_a = port_a_rc.borrow_mut();
+    let mut port_b = port_b_rc.borrow_mut();
+
+    // Link the ports to each other
+    port_a.remote_port = Some(Rc::downgrade(port_b_rc));
+    port_b.remote_port = Some(Rc::downgrade(port_a_rc));
+
+    // Set port states to ACTIVE and LINK_UP now that they are connected
+    port_a.port_info.set_port_state(4); // ACTIVE
+    port_a.port_info.set_port_physical_state(5); // LINK_UP
+    port_a.port_info.set_link_speed_active(1); // Set active link params
+    port_a.port_info.set_link_width_active(1);
+
+    port_b.port_info.set_port_state(4); // ACTIVE
+    port_b.port_info.set_port_physical_state(5); // LINK_UP
+    port_b.port_info.set_link_speed_active(1); // Set active link params
+    port_b.port_info.set_link_width_active(1);
+
+    log::info!(
+        "Connected port {} on node '{}' to port {} on node '{}'",
+        port_a.num,
+        port_a.parent.upgrade().map_or("?".to_string(), |p| p.borrow().description.clone()),
+        port_b.num,
+        port_b.parent.upgrade().map_or("?".to_string(), |p| p.borrow().description.clone())
+    );
 }
 
 impl Fabric {
     pub fn new(file: fs::File) -> Self {
-        Fabric { 
+        Fabric {
             file: file,
             nodes: Vec::new(),
             switches: Vec::new(),
             hcas: Vec::new(),
             dr_paths: HashMap::new(),
+            response_delay: None,
         }
     }
 
@@ -62,202 +92,261 @@ impl Fabric {
         return hca_rc.clone();
     }
 
+    fn send_dr_response(
+        &mut self,
+        tid: u64,
+        umad: &ib_user_mad,
+        mad: &ib_mad,
+        dr_smp: &mad::dr_smp_mad,
+        attr_data: &[u8],
+    ) -> Result<(), io::Error> {
+
+        if let Some(max_delay) = self.response_delay {
+            if max_delay > 0 {
+                let delay = rand::random_range(0..=max_delay);
+                log::trace!("[tid: {}] Delaying response by {}ms", tid, delay);
+                std::thread::sleep(time::Duration::from_micros(delay));
+            }
+        }
+
+        let mut resp_umad = umad.clone();
+        let mut resp_mad = *mad;
+        let mut resp_dr = *dr_smp;
+
+        resp_dr.attr_layout[..attr_data.len()].copy_from_slice(attr_data);
+        let dr_bytes = resp_dr.to_bytes();
+        resp_mad.data[..dr_bytes.len()].copy_from_slice(&dr_bytes);
+        let mad_bytes = resp_mad.to_bytes();
+        resp_umad.data[..mad_bytes.len()].copy_from_slice(&mad_bytes);
+
+        self.file.write_all(&resp_umad.to_bytes())
+    }
+
     pub fn process_one_umad(&mut self) -> Result<(), io::Error> {
         let mut buf: [u8; 320] = [0; 320];
         let r = self.file.read(&mut buf)?;
-        log::trace!("process_one_umad - Read {} bytes", r);
+        log::trace!("Read {} bytes from UMAD file.", r);
 
         if r < MIN_UMAD_SIZE {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "UMAD too small"));
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, format!("UMAD too small: expected at least {} bytes, got {}", MIN_UMAD_SIZE, r)));
         }
 
         let umad = ib_user_mad::from_bytes(&buf).ok_or_else( || {
-            io::Error::new(io::ErrorKind::InvalidData, "Unable to parse UMAD")
+            io::Error::new(io::ErrorKind::InvalidData, "Failed to parse ib_user_mad")
         })?;
-
-        log::trace!("process_one_umad - umad: {:?}", umad);
 
         let mad = ib_mad::from_bytes(&umad.data).ok_or_else( || {
-            io::Error::new(io::ErrorKind::InvalidData, "Unable to parse MAD address")
+            io::Error::new(io::ErrorKind::InvalidData, "Failed to parse ib_mad")
         })?;
 
-        log::trace!("process_one_umad - mad: {:?}", mad);
+        // Use the transaction ID for correlated logging
+        let tid = mad.tid;
+        let attr_id = mad.attr_id;
+        log::debug!("[tid: {}] Received MAD. Class: 0x{:02X}, AttrID: 0x{:04X}", tid, mad.mgmt_class, attr_id);
+
 
         match mad.mgmt_class {
-            0x81 =>{
+            0x81 =>{ // SubnAdm (Directed Route)
+                log::trace!("[tid: {}] Processing SubnAdm Directed Route MAD.", tid);
 
-                log::trace!("process_one_umad - DR MAD mgmt_class.");
-
-                // DR MAD
                 let dr_smp = mad::dr_smp_mad::from_bytes(&mad.data).ok_or_else( || {
                     io::Error::new(io::ErrorKind::InvalidData, "Unable to parse DR SMP")
                 })?;
 
+                log::trace!("[tid: {}] Initial Path: {:?}", tid, dr_smp.initial_path);
+
                 let mut current_node: Option<Rc<RefCell<Node>>> = None;
                 let mut current_port: Option<Rc<RefCell<Port>>> = None;
 
+                // --- Path Traversal ---
                 for (index, portnum) in dr_smp.initial_path.iter().enumerate(){
                     if index == 0 && *portnum == 0 {
+                        log::trace!("[tid: {}] Path[{}]: Port 0, initiating traversal from first hop.", tid, index);
+
                         let node_weak = self.dr_paths.get(&FIRST_HOP).ok_or_else(|| {
-                            io::Error::new(io::ErrorKind::NotFound, "Unable to find first hop.")
+                            io::Error::new(io::ErrorKind::NotFound, format!("[tid: {}] Unable to find first hop in dr_paths.", tid))
                         })?;
 
                         let first_hop_port = node_weak.upgrade().ok_or_else(|| {
-                            io::Error::new(io::ErrorKind::NotFound, "First hop reference is none.")
+                            io::Error::new(io::ErrorKind::NotFound, format!("[tid: {}] First hop reference is stale.", tid))
                         })?;
 
                         let port_ref = first_hop_port.borrow();
 
-                        let port_parent = port_ref.parent.upgrade().ok_or_else(|| {
-                            io::Error::new(io::ErrorKind::NotFound, "Port has no parent.")
+                        let parent_node = port_ref.parent.upgrade().ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::NotFound, format!("[tid: {}] First hop port {} has no parent.", tid, port_ref.num))
                         })?;
+                        
+                        log::trace!("[tid: {}] Path[{}]: Starting at node '{}'", tid, index, parent_node.borrow().description);
 
-                        current_node = Some(port_parent.clone());
+                        current_node = Some(parent_node);
+                        current_port = Some(first_hop_port.clone());
                         continue;
                     }
 
-                    if index != 0 && *portnum == 0 {
-                        log::trace!("Encountered zero portnum at index {} — breaking path traversal.", index);
+                    // A port number of 0 signifies the end of the path.
+                    if *portnum == 0 {
+                        log::trace!("[tid: {}] Path[{}]: Encountered port 0, path traversal complete.", tid, index);
                         break;
                     }
-
+                    
                     let node_rc = current_node.clone().ok_or_else(|| {
-                        io::Error::new(io::ErrorKind::NotFound, "Current node is none.")
+                        io::Error::new(io::ErrorKind::NotFound, format!("[tid: {}] Path traversal failed: current_node is None at index {}.", tid, index))
                     })?;
 
                     let node_ref = node_rc.borrow();
+                    log::trace!("[tid: {}] Path[{}]: Traversing from node '{}' via port {}.", tid, index, node_ref.description, *portnum);
 
-                    let port_rc = &node_ref.ports.iter().find( | p | {
-                        let port_ref = p.borrow();
-                        port_ref.num == *portnum
-                    }).ok_or_else(||{
-                        io::Error::new(io::ErrorKind::NotFound, "Unable to find port")
+
+                    let egress_port_rc = &node_ref.ports.iter().find( |p| p.borrow().num == *portnum).ok_or_else(||{
+                        io::Error::new(io::ErrorKind::NotFound, format!("[tid: {}] Could not find egress port {} on node '{}'", tid, *portnum, node_ref.description))
                     })?;
 
-                    let port_ref = port_rc.borrow();
+                    let egress_port_ref = egress_port_rc.borrow();
 
-                    let remote_port_weak = port_ref.remote_port.as_ref().ok_or_else(|| {
-                        io::Error::new(io::ErrorKind::NotFound, "Remote port has no reference.")
+                    let remote_port_weak = egress_port_ref.remote_port.as_ref().ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::NotFound, format!("[tid: {}] Port {} on node '{}' is not connected (no remote_port).", tid, *portnum, node_ref.description))
                     })?;
 
                     let remote_port_rc = remote_port_weak.upgrade().ok_or_else(|| {
-                        io::Error::new(io::ErrorKind::NotFound, "Remote port is none.")
+                        io::Error::new(io::ErrorKind::NotFound, format!("[tid: {}] Remote port reference from '{}' port {} is stale.", tid, node_ref.description, *portnum))
                     })?;
-                    {
-                    let remote_port_ref = remote_port_rc.borrow();
-
-                    let ni_rc = remote_port_ref.parent.upgrade().ok_or_else(|| {
-                        io::Error::new( io::ErrorKind::NotFound, "Parent of port not found.")
-                    })?;
-
-                    current_node = Some(ni_rc);
-                    }
+                    
+                    let next_node_rc = { // Scoped borrow
+                        let remote_port_ref = remote_port_rc.borrow();
+                        remote_port_ref.parent.upgrade().ok_or_else(|| {
+                            io::Error::new( io::ErrorKind::NotFound, format!("[tid: {}] Remote port {} has no parent node.", tid, remote_port_ref.num))
+                        })?
+                    };
+                    
+                    log::trace!("[tid: {}] Path[{}]: Arrived at node '{}'", tid, index, next_node_rc.borrow().description);
+                    current_node = Some(next_node_rc);
                     current_port = Some(remote_port_rc);
                 }
 
-                match mad.attr_id {
-                    0x0011 => {
-                        // NodeInfo
-                        let node_rc = current_node.ok_or_else(|| {
-                            io::Error::new( io::ErrorKind::NotFound, "Node not found")
-                        })?;
+                let attr_id = mad.attr_id;
+                
+                if let Some(cn) = &current_node {
+                    log::debug!("[tid: {}] Path traversal finished. Final node: '{}'. Processing AttrID: 0x{:04X}", tid, cn.borrow().description, attr_id);
+                } else {
+                    log::debug!("[tid: {}] Path traversal finished. Final node: None. Processing AttrID: 0x{:04X}", tid, attr_id);
+                }
+                
 
+                match attr_id {
+                    0x1000 => { // NodeDesc
+                        let node_rc = current_node.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("[tid: {}] Target node not found for NodeDesc query", tid)))?;
                         let node_ref = node_rc.borrow();
 
-                        log::trace!("process_one_umad - node_info: {}", node_ref.description);
+                        log::debug!("[tid: {}] Responding with NodeDesc for '{}': '{}'", tid, node_ref.description, node_ref.description);
 
+                        let resp_nd_str = &node_ref.description;
+                        let nd_bytes = resp_nd_str.as_bytes();
 
-                        let mut resp_umad = umad.clone();
-                        let mut resp_mad = mad;
-                        let mut resp_dr = dr_smp;
-
-                        let ni_bytes = node_ref.node_info.to_bytes();
-                        resp_dr.attr_layout[..ni_bytes.len()].copy_from_slice(&ni_bytes);
-
-                        let dr_bytes = resp_dr.to_bytes();
-                        resp_mad.data[..dr_bytes.len()].copy_from_slice(&dr_bytes);
-
-                        let mad_bytes = resp_mad.to_bytes();
-                        resp_umad.data[..mad_bytes.len()].copy_from_slice(&mad_bytes);
-
-                        let bytes = &resp_umad.to_bytes();
-
-                        log::trace!("process_one_umad - node_info bytes: {:?}", bytes);
-
-                        self.file.write(&bytes)?;
+                        self.send_dr_response(tid, &umad, &mad, &dr_smp, &nd_bytes)?;
+                        log::trace!("[tid: {}] Wrote NodeDesc response.", tid);
                     }
-                    0x0015 => {
-                        // PortInfo
-                        let port_rc = current_port.ok_or_else(|| {
-                            io::Error::new(io::ErrorKind::NotFound, "Port not found")
-                        })?;
 
+                    0x1100 => { // NodeInfo
+                        let node_rc = current_node.ok_or_else(|| io::Error::new( io::ErrorKind::NotFound, format!("[tid: {}] Target node not found for NodeInfo query", tid)))?;
+                        let port_rc = current_port.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("[tid: {}] Target port not found for NodeInfo query", tid)))?;
+                        
+                        let node_ref = node_rc.borrow();
                         let port_ref = port_rc.borrow();
 
-                        log::trace!(
-                            "process_one_umad - port_info: port {} lid {}",
-                            port_ref.num,
-                            port_ref.port_info.lid()
+                        log::debug!("[tid: {}] Responding with NodeInfo for '{}' from perspective of port {}", tid, node_ref.description, port_ref.num);
+
+                        let mut resp_ni = node_ref.node_info.clone();
+                        resp_ni.local_port = port_ref.num;
+
+                        let ni_bytes = resp_ni.to_bytes();
+ 
+                        self.send_dr_response(tid, &umad, &mad, &dr_smp, &ni_bytes)?;
+                        log::trace!("[tid: {}] Wrote NodeInfo response.", tid);
+                    }
+
+                    0x1500 => { // PortInfo
+
+                        let mut portnum = mad.attr_mod.to_be() as u8;
+
+                        log::debug!(
+
+                            "[tid: {}] Received PortInfo for port {}",
+                            tid,
+                            portnum,
                         );
 
-                        let mut resp_umad = umad.clone();
-                        let mut resp_mad = mad;
-                        let mut resp_dr = dr_smp;
+                        if portnum == 0 {
+                            portnum = 1;
+                        }
 
-                        let pi_bytes = port_ref.port_info.to_bytes();
-                        resp_dr.attr_layout[..pi_bytes.len()].copy_from_slice(&pi_bytes);
+                        let node_rc = current_node.ok_or_else(|| io::Error::new( io::ErrorKind::NotFound, format!("[tid: {}] Target node not found for NodeInfo query", tid)))?;                        
+                        let node_ref = node_rc.borrow();
 
-                        let dr_bytes = resp_dr.to_bytes();
-                        resp_mad.data[..dr_bytes.len()].copy_from_slice(&dr_bytes);
+                        let target_port_rc = node_ref.ports.iter().find( |p| p.borrow().num == portnum).ok_or_else(||{
+                            io::Error::new(io::ErrorKind::NotFound, format!("[tid: {}] Could not find egress port {} on node '{}'", tid, portnum, node_ref.description))
+                        })?;
 
-                        let mad_bytes = resp_mad.to_bytes();
-                        resp_umad.data[..mad_bytes.len()].copy_from_slice(&mad_bytes);
+                        let target_port_ref = target_port_rc.borrow();
 
-                        self.file.write(&resp_umad.to_bytes())?;
+
+                        log::debug!(
+                            "[tid: {}] Responding with PortInfo for port {} on node '{}' (LID: {}) logical_state: {}, phy_state: {}",
+                            tid,
+                            portnum,
+                            node_ref.description,
+                            target_port_ref.port_info.lid(),
+                            target_port_ref.port_info.port_state(),
+                            target_port_ref.port_info.port_physical_state(),
+                        );
+
+                        let resp_pi = target_port_ref.port_info;
+                        let pi_bytes = resp_pi.to_bytes();
+
+                        self.send_dr_response(tid, &umad, &mad, &dr_smp, &pi_bytes)?;
+                        log::trace!("[tid: {}] Wrote PortInfo response.", tid);
                     }
-                    _ => {}
+                    _ => {
+                        log::warn!("[tid: {}] Unhandled SubnAdm AttrID: 0x{:04X}", tid, attr_id);
+                    }
                 }
-
-
             }
             0x1 =>{
-                // LID Routed
+                log::debug!("[tid: {}] Received LID-Routed MAD. (Currently unhandled)", tid);
             }
 
-            _ => {}
+            _ => {
+                log::warn!("[tid: {}] Received unhandled MAD management class: 0x{:02X}", tid, mad.mgmt_class);
+            }
         }
 
         Ok(())
     }
 
     pub fn run(&mut self, done: sync::mpsc::Receiver<bool> ) -> Result<(), io::Error>{
-
+        log::info!("Starting UMAD processing loop...");
         loop {
+            // Non-blocking check for the done signal
             match done.try_recv() {
-                Ok(r) => {
-                    if r == true {
-                        break;
-                    }
+                Ok(true) => {
+                    log::info!("Stop signal received. Shutting down UMAD processing loop.");
+                    break;
                 }
-                Err(_e) =>{
-                    
+                Ok(false) => { /* Continue */ }
+                Err(sync::mpsc::TryRecvError::Empty) => { /* No signal, continue */ }
+                Err(sync::mpsc::TryRecvError::Disconnected) => {
+                    log::warn!("MPSC channel disconnected. Shutting down.");
+                    break;
                 }
             }
 
-            let r = self.process_one_umad();
-            
-            match r {
-                Ok(_) =>{}
-                Err(e) => {
-                        log::trace!(
-                            "run - process MAD error: {:?}",
-                            e
-                        );
-
+            if let Err(e) = self.process_one_umad() {
+                if e.kind() != io::ErrorKind::UnexpectedEof {
+                     log::error!("Error processing UMAD packet: {}. Kind: {:?}", e, e.kind());
                 }
-                
             }
         }
+        log::info!("UMAD processing loop has finished.");
         Ok(())
     }
 
@@ -270,9 +359,10 @@ impl Port {
 
         port_info.set_local_portnum(num);
         port_info.set_lid(lid);
-        // Default simulated ports come up active with basic link parameters
-        port_info.set_port_state(4); // ACTIVE
-        port_info.set_port_physical_state(5); // LINK_UP
+
+        port_info.set_port_state(1); // Down 
+        port_info.set_port_physical_state(2); // Polling
+
         port_info.set_link_speed_supported(1);
         port_info.set_link_speed_enabled(1);
         port_info.set_link_speed_active(1);
@@ -301,7 +391,7 @@ impl Node {
             node_info: node_info{
                 base_version: 0x1,
                 class_version: 0x1,
-                node_type:  0x1,
+                node_type:  0x1, // Channel Adapter
                 nports: 1,
                 system_guid: guid,
                 node_guid: guid,
@@ -321,13 +411,13 @@ impl Node {
 
     pub fn new_switch(description: &str, guid: u64) -> Node {
 
-        let switch = 
+        let switch =
                 Node{
                     description: description.to_owned(),
                     node_info: node_info{
                         base_version: 0x1,
                         class_version: 0x1,
-                        node_type:  0x2,
+                        node_type:  0x2, // Switch
                         nports: 65,
                         system_guid: guid,
                         node_guid: guid,
@@ -335,13 +425,13 @@ impl Node {
                         partition_cap: 8,
                         device_id: 0xd2f2,
                         revision: 0x0000_00a0,
-                        local_port: 0,
+                        local_port: 0, // Port 0 is the management port
                         vendor_id: [0x00, 0xcf, 0x09],
                         reserved: [0; 24],
                     },
                     ports: Vec::new(),
                 };
-        
+
 
         switch
     }

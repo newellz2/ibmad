@@ -7,6 +7,7 @@ use crate::{
 
 const START_PATH: [u8; 64] = [0; 64];
 
+// --- Struct definitions remain the same ---
 #[derive(Debug, Clone)]
 pub struct Port {
     pub number: u8,
@@ -47,7 +48,24 @@ pub struct Fabric {
 
 impl Fabric {
 
-    fn get_hop_count(&self, path: &[u8; 64]) -> u8 {
+    fn format_path(path: &[u8; 64]) -> String {
+        let mut hop_vec: Vec<String> = Vec::new();
+
+        // The actual path starts at index 1.
+        for &hop in path.iter().skip(1) {
+            if hop == 0 {
+                break;
+            }
+            hop_vec.push(hop.to_string());
+        }
+        if hop_vec.is_empty() {
+            "Direct".to_string()
+        } else {
+            format!("0 -> {}", hop_vec.join(" -> "))
+        }
+    }
+    
+    fn get_hop_count(path: &[u8; 64]) -> u8 {
         path.iter().skip(1).take_while(|&&p| p != 0).count() as u8
     }
 
@@ -144,86 +162,85 @@ impl Fabric {
 
     fn send_and_match_with_retries(
         &mut self,
-        umad_to_send: ib_user_mad, // We take ownership to allow resending
+        umad_to_send: ib_user_mad,
     ) -> Result<ib_user_mad, io::Error> {
-        let retries = self.retries; // Or make this configurable on the Fabric struct
-        let mut current_timeout = self.timeout; // Initial timeout in ms
-        let backoff_factor = 2; // e.g., 100ms -> 200ms -> 400ms
+        let retries = self.retries;
+        let mut current_timeout = self.timeout;
+        let backoff_factor = 2;
+        let expected_tid = umad_to_send.get_tid()?;
 
         for attempt in 0..=retries {
-            // Send MAD
+            log::trace!(
+                "-> Sending MAD with TID 0x{:X} (Attempt {}/{})",
+                expected_tid,
+                attempt + 1,
+                retries + 1
+            );
             if let Err(e) = mad::send(&mut self.port, &umad_to_send) {
-                log::debug!(
-                    "Attempt {} encounted an error while sending MAD: {:?}",
-                    attempt + 1,
+                log::error!(
+                    "Fatal error sending MAD with TID 0x{:X}: {:?}",
+                    expected_tid,
                     e
                 );
                 self.mad_errors += 1;
                 return Err(io::Error::new(e.kind(), format!("Fatal send error: {}", e)));
             }
 
-            if attempt == 0 { // Only count the first send
+            if attempt == 0 {
                 self.mads_sent += 1;
             }
 
-            // --- Wait for a matching response ---
-            let expected_tid = umad_to_send.get_tid()?;
             let deadline = time::Instant::now() + time::Duration::from_millis(current_timeout as u64);
 
             loop {
                 let now = time::Instant::now();
                 if now >= deadline {
-                    // This attempt timed out. Break the inner loop to trigger a retry.
                     log::debug!(
-                        "Attempt {} timed out waiting for TID 0x{:x}",
+                        "Attempt {} timed out waiting for TID 0x{:X}",
                         attempt + 1,
                         expected_tid
                     );
                     self.mad_timeouts += 1;
-                    break; // Exit the loop to go to the next retry attempt
+                    break;
                 }
                 let remaining_time = (deadline - now).as_millis() as u32;
                 let mut recv_umad = self.build_umad();
 
                 match mad::recv(&mut self.port, &mut recv_umad, remaining_time) {
                     Ok(_) => {
-
                         if umad_to_send.is_tid_equal(&recv_umad) {
+                            log::trace!("<- Matched response for TID 0x{:X}", expected_tid);
                             return Ok(recv_umad);
                         } else {
-                            log::trace!("Discarding mismatched TID, expected 0x{:x}, got {:?}", expected_tid, recv_umad.get_tid());
+                            log::trace!(
+                                "Discarding mismatched TID. Expected 0x{:X}, got 0x{:X}",
+                                expected_tid,
+                                recv_umad.get_tid().unwrap_or(0)
+                            );
                             continue;
                         }
-
                     }
                     Err(e) if e.kind() == io::ErrorKind::TimedOut => {
-                        log::debug!(
-                            "Inner recv for attempt {} timed out waiting for TID 0x{:x}",
-                            attempt + 1,
-                            expected_tid
-                        );
-                        self.mad_timeouts += 1;
                         break;
                     }
                     Err(e) => {
-                        log::debug!(
-                            "Inner recv for attempt {} encountered an error waiting for TID 0x{:x}, error: {:?}",
+                        log::warn!(
+                            "Receive error on attempt {} for TID 0x{:X}: {:?}",
                             attempt + 1,
                             expected_tid,
                             e,
                         );
                         self.mad_errors += 1;
-                        break;
+                        continue;
                     }
                 }
             }
-
             current_timeout *= backoff_factor;
         }
 
         Err(io::Error::new(
             io::ErrorKind::TimedOut,
-            format!("All {} retries failed for TID {}", retries, umad_to_send.get_tid()?)
+            format!("All {} retries failed for TID {}", retries, expected_tid)
         ))
     }
 
@@ -235,7 +252,6 @@ impl Fabric {
     }
 
     pub fn discover_node(&mut self, path: [u8; 64], hop_cnt: u8) -> Result<Rc<RefCell<Node>>, io::Error> {
-        // 1. Fetch node_info, create a Node
         let node_info = self.fetch_node_info(path, hop_cnt)?;
 
         let node_type = enums::IbNodeType::try_from(node_info.node_type)
@@ -246,7 +262,7 @@ impl Fabric {
 
         let mut node = Node {
             node_guid: node_info.node_guid,
-            node_type: node_type,
+            node_type,
             local_port: node_info.local_port,
             nports: node_info.nports,
             description: None,
@@ -254,46 +270,47 @@ impl Fabric {
             ports: Vec::with_capacity(node_info.nports as usize),
         };
 
-        // 2. Fetch the NodeDescription and update the Node object.
-        let nodedesc = self.fetch_node_desc(path, hop_cnt)?;
+        let node_desc = self.fetch_node_desc(path, hop_cnt)?;
+        node.description = Some(node_desc);
 
-        node.description = Some(nodedesc);
+        log::debug!(
+            "Discovered Node: '{}' (GUID: 0x{:X}, Type: {:?}, Ports: {})",
+            node.description.as_deref().unwrap_or("N/A"),
+            node.node_guid.to_be(),
+            node.node_type,
+            node.nports
+        );
+
         let nports = node.nports;
+        let node_rc = Rc::new(RefCell::new(node));
 
-        // 3. Wrap the node in Rc<RefCell> for shared ownership.
-        let node_rc: Rc<RefCell<Node>> = Rc::new(RefCell::new(node));
-
-        // 4. Discover and populate all ports for the node.
         self.populate_node_ports(&node_rc, nports, path, hop_cnt)?;
 
-        // 5. Add the fully populated node to our list.
-        log::debug!("adding node: {:?}", node_rc);
         self.nodes.push(node_rc.clone());
-        self.node_map.insert(node_info.node_guid, node_rc.clone()); // <-- ADD THIS LINE
+        self.node_map.insert(node_info.node_guid, node_rc.clone());
 
         Ok(node_rc)
     }
 
     fn fetch_node_info(&mut self, path: [u8; 64], hop_cnt: u8) -> Result<node_info, io::Error> {
         let start_ts = time::Instant::now();
+        log::debug!("Fetching NodeInfo for path: [{}]", Fabric::format_path(&path));
 
         let umad_to_send = self.build_dr_smp_umad(path, enums::SmiAttrID::NodeInfo, 0x0, hop_cnt);
         let recv_ni_umad = self.send_and_match_with_retries(umad_to_send)?;
 
-        let end_ts = time::Instant::now();
-
-        let ts_diff = end_ts - start_ts;
-
-        self.ni_timings.push(ts_diff);
+        self.ni_timings.push(time::Instant::now() - start_ts);
 
         let ni = node_info::from_bytes(&recv_ni_umad.data[64..]).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "Could not parse NodeInfo data.")
         })?;
-
+        
+        log::trace!("<- Received NodeInfo: {:?}", ni);
         Ok(ni)
     }
 
     fn fetch_node_desc(&mut self, path: [u8; 64], hop_cnt: u8) -> Result<String, io::Error> {
+        log::debug!("Fetching NodeDesc for path: [{}]", Fabric::format_path(&path));
         let umad_to_send = self.build_dr_smp_umad(path, enums::SmiAttrID::NodeDesc, 0x0, hop_cnt);
         let recv_nd_umad = self.send_and_match_with_retries(umad_to_send)?;
 
@@ -304,28 +321,31 @@ impl Fabric {
         let node_desc_bytes = &dr.attr_layout[..mad::node::NODE_DESC_LENGTH];
         let mut node_desc = String::from_utf8_lossy(node_desc_bytes).trim_end_matches('\0').to_string();
 
-        let r = node_desc.find('\0');
-        if let Some(null_idx) = r {
-            node_desc = node_desc[0..null_idx].to_string();
+        if let Some(null_idx) = node_desc.find('\0') {
+            node_desc.truncate(null_idx);
         }
 
+        log::trace!("<- Received NodeDesc: '{}'", node_desc);
         Ok(node_desc)
     }
 
     fn fetch_port_info(&mut self, path: [u8; 64], port_num: u8, hop_cnt: u8) -> Result<Port, io::Error> {
+        log::debug!(
+            "Fetching PortInfo for port {} on path: [{}]",
+            port_num,
+            Fabric::format_path(&path)
+        );
         let umad_to_send = self.build_dr_smp_umad(path, enums::SmiAttrID::PortInfo, port_num as u32, hop_cnt);
         let recv_pi_umad = self.send_and_match_with_retries(umad_to_send)?;
-
-        log::debug!("recv portinfo from path: {:?}, umad: {:?}", path, recv_pi_umad);
 
         let pi = port_info::from_bytes(&recv_pi_umad.data[64..]).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "could not parse portinfo data.")
         })?;
 
+        log::trace!("<- Received PortInfo for port {}: {:?} {} {}", port_num, pi, pi.port_state(), pi.port_physical_state());
+
         let link_state = enums::IbPortLinkLayerState::try_from(pi.port_state())
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("invalid port_state: {:?}", e)))?;
-
-        log::debug!("Port physical state: {}", pi.port_physical_state());
         let phy_state = enums::IbPortPhyState::try_from(pi.port_physical_state())
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("invalid port_physical_state: {:?}", e)))?;
 
@@ -333,26 +353,33 @@ impl Fabric {
             number: port_num,
             link_state,
             phys_state: phy_state,
-            parent: std::rc::Weak::new(), // Parent is set by the caller.
+            parent: std::rc::Weak::new(),
             remote_port: None,
         })
     }
 
     fn populate_node_ports(&mut self, node_rc: &Rc<RefCell<Node>>, num_ports: u8, path: [u8; 64], hop_cnt: u8) -> Result<(), io::Error> {
         for p in 1..=num_ports {
-            log::debug!("send portinfo mad to port: {}", p);
             match self.fetch_port_info(path, p, hop_cnt) {
                 Ok(port) => {
                     let mut node_ref = node_rc.borrow_mut();
                     let port_rc = Rc::new(RefCell::new(port));
+                    log::trace!(
+                        "Successfully added Port {} ({:?}/{:?}) to node '{}'",
+                        p,
+                        port_rc.borrow().link_state,
+                        port_rc.borrow().phys_state,
+                        node_ref.description.as_deref().unwrap_or("N/A")
+                    );
                     port_rc.borrow_mut().parent = Rc::downgrade(node_rc);
                     node_ref.ports.push(port_rc);
                 }
                 Err(e) if e.kind() == io::ErrorKind::TimedOut => {
-                    log::debug!("timeout reading portinfo for port {}", p);
+                    log::debug!("Timeout getting PortInfo for port {} on path [{}]", p, Fabric::format_path(&path));
                     self.mad_timeouts += 1;
                 }
                 Err(e) => {
+                    log::error!("Error getting PortInfo for port {} on path [{}]: {}", p, Fabric::format_path(&path), e);
                     return Err(e);
                 }
             }
@@ -360,7 +387,41 @@ impl Fabric {
         Ok(())
     }
 
-    pub fn discover(&mut self) -> Result<(), io::Error> {
+    pub fn first_hop_discovery(&mut self) -> Result<(), io::Error> {
+        let mut nodes: Vec<Rc<RefCell<Node>>> = Vec::new();
+        let mut hop_cnt: u8 = 0;
+
+
+        let first_node = self.discover_node(START_PATH, hop_cnt)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, 
+                format!("Could not discover first-hop node: {:?}", e)))?;
+
+        nodes.push(first_node.clone());
+
+        hop_cnt += 1;
+
+        for port_rc in first_node.borrow().ports.iter() {
+            let mut path: [u8; 64] = [0; 64];
+            path[1] = port_rc.borrow().number;
+            
+            log::debug!("Probing from local HCA Port {}", path[1]);
+            match self.discover_node(path, hop_cnt) {
+                Ok(node) => {
+                    nodes.push(node);
+                },
+                Err(e) => {
+                    log::error!("Could not discover neighbor on local HCA Port {}: {}", path[1], e);
+                    continue;
+                },
+            }
+        }
+
+        log::debug!(" Discovered first-hop nodes: {:?}", nodes);
+
+        Ok(())
+    }
+
+    pub fn seq_discover(&mut self) -> Result<(), io::Error> {
         let mut visited: HashSet<u64> = HashSet::new();
         let mut stack: VecDeque<(Rc<RefCell<Port>>, [u8; 64])> = VecDeque::new();
         let mut hop_cnt: u8 = 0;
@@ -370,175 +431,152 @@ impl Fabric {
         self.switches.clear();
         self.hcas.clear();
         self.dr_paths.clear();
-
         self.mad_errors = 0;
         self.mad_timeouts = 0;
         self.mads_sent = 0;
 
         let start_ts = time::Instant::now();
 
-        // first-hop, the hca performing the discovery
         let first_node = self.discover_node(START_PATH, hop_cnt)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("could not discover first-hop node: {:?}", e)))?;
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Could not discover first-hop node: {:?}", e)))?;
 
-        // next hop(s) - should only be one port
-        hop_cnt +=1;
-        let node_ref = first_node.borrow();
+        hop_cnt += 1;
+        visited.insert(first_node.borrow().node_guid);
 
-        visited.insert(node_ref.node_guid);
-
-        for port_rc in node_ref.ports.iter(){
+        for port_rc in first_node.borrow().ports.iter() {
             let mut path: [u8; 64] = [0; 64];
-            let port_ref = port_rc.borrow();
-            path[1] = port_ref.number;
+            path[1] = port_rc.borrow().number;
+            
+            log::debug!("Probing from local HCA Port {}", path[1]);
             match self.discover_node(path, hop_cnt) {
                 Ok(node) => {
-                    log::debug!("found node connected to node: {:?}", node);
+                    visited.insert(node.borrow().node_guid);
 
-                    let node_ref = node.borrow();
+                    for nh_p in node.borrow().ports.iter() {
+                        
+                        let link_state = &nh_p.borrow().link_state;
 
-                    visited.insert(node_ref.node_guid);
+                        if *link_state == enums::IbPortLinkLayerState::Active {
 
-                    for nh_p in node_ref.ports.iter(){
-                        let port_ref = nh_p.borrow();
-                        if port_ref.link_state == enums::IbPortLinkLayerState::Active || 
-                            port_ref.link_state == enums::IbPortLinkLayerState::Init {
-                            stack.push_front(
-                                (nh_p.clone(), path)
-                            );
+                            log::debug!("Adding switch port {}, state: {:?}, desc: ('{}') to discovery stack. Path: [{}]", 
+                            nh_p.borrow().number,
+                            *link_state,
+                            node.borrow().description.as_deref().unwrap_or("N/A"), 
+                            Fabric::format_path(&path));
+
+                            stack.push_front((nh_p.clone(), path));
                         }
                     }
                 },
                 Err(e) => {
-                    log::debug!("Error discovering node on path: {:?}, error: {:?}", path, e);
+                    log::warn!("Could not discover neighbor on local HCA Port {}: {}", path[1], e);
                     continue;
                 },
             }
         }
 
-        log::debug!("path stack length: {}", stack.len());
+        log::debug!("Initial discovery stack size: {}", stack.len());
 
         while let Some((local_port_rc, path_to_local_node)) = stack.pop_front() {
+            let parent_rc = local_port_rc.borrow().parent.upgrade().unwrap();
+            let parent_ref = parent_rc.borrow();
+            log::trace!(
+                "Popped Port {} on node '{}' (path: [{}]) from stack. (Stack size: {})",
+                local_port_rc.borrow().number,
+                parent_ref.description.as_deref().unwrap_or("N/A"),
+                Fabric::format_path(&path_to_local_node),
+                stack.len()
+            );
 
-            let mut local_port_ref = local_port_rc.borrow_mut();
-
-            // Check if this port has already been connected
-            if local_port_ref.remote_port.is_some() {
+            if local_port_rc.borrow().remote_port.is_some() {
+                log::trace!("Port {} already has a remote link, skipping.", local_port_rc.borrow().number);
                 continue;
             }
 
-            // Build the DR path
-            let hop_cnt = self.get_hop_count(&path_to_local_node) + 1;
-
+            let hop_cnt = Fabric::get_hop_count(&path_to_local_node) + 1;
             let mut path_to_remote_node = path_to_local_node;
 
             if (hop_cnt as usize) < path_to_remote_node.len() {
-                path_to_remote_node[hop_cnt as usize] = local_port_ref.number;
+                path_to_remote_node[hop_cnt as usize] = local_port_rc.borrow().number;
             } else {
-                log::debug!("Path too long, cannot discover beyond port {}", local_port_ref.number);
+                log::warn!("Path too long, cannot discover beyond port {}", local_port_rc.borrow().number);
                 continue;
             }
 
-            let remote_hop_cnt = hop_cnt;
-
-            let remote_node_info = match self.fetch_node_info(path_to_remote_node, remote_hop_cnt) {
-                Ok(ni) => {
-                    ni
-                },
+            let remote_node_info = match self.fetch_node_info(path_to_remote_node, hop_cnt) {
+                Ok(ni) => ni,
                 Err(e) if e.kind() == io::ErrorKind::TimedOut => {
-                    if let Some(parent_rc) = local_port_ref.parent.upgrade() {
-                        let parent_ref = parent_rc.borrow();
-                        log::debug!(
-                            "Port {} on node 0x{:x}, {:?} is not connected (timeout).",
-                            local_port_ref.number,
-                            parent_ref.node_guid.to_be(),
-                            parent_ref.description,
-                        );
-                    } else {
-                        log::debug!("Port {} has no parent, cannot log full info.", local_port_rc.borrow().number);
-                    }
+                    log::debug!(
+                        "Port {} on node '{}' (0x{:X}) appears unconnected (timeout on path [{}]).",
+                        local_port_rc.borrow().number,
+                        parent_ref.description.as_deref().unwrap_or("N/A"),
+                        parent_ref.node_guid.to_be(),
+                        Fabric::format_path(&path_to_remote_node),
+                    );
                     continue;
                 }
                 Err(e) => return Err(e),
             };
 
-            // Find or discover the full remote node.
             let node_guid = remote_node_info.node_guid;
-            let remote_node_port = remote_node_info.local_port;
 
             let remote_node_rc = if let Some(found_node) = self.node_map.get(&node_guid) {
-                // Node previously found
+                log::trace!("Remote node 0x{:X} already discovered.", remote_node_info.node_guid.to_be());
                 found_node.clone()
             } else {
-                // New node, discover it
-                log::debug!("Found new node with GUID: 0x{:x}", remote_node_info.node_guid.to_be());
-                log::debug!("New node, path: {:?}, remote_hop_cnt: {}", path_to_remote_node, remote_hop_cnt);
-
-                visited.insert(remote_node_info.node_guid);
-                
-                match self.discover_node(path_to_remote_node, remote_hop_cnt){
+                log::debug!("Found new node with GUID: 0x{:X}", remote_node_info.node_guid.to_be());
+                match self.discover_node(path_to_remote_node, hop_cnt) {
                     Ok(node_rc) => {
-                        {
-                            let node_ref = node_rc.borrow();
+                        if node_rc.borrow().node_type == enums::IbNodeType::Switch {
+                            for port_rc in node_rc.borrow().ports.iter().rev() {
+                                let link_state = &port_rc.borrow().link_state;
+                                if *link_state == enums::IbPortLinkLayerState::Active {
 
-                            // Add the node to the stack if it is a switch
-                            // HCA's have 1-4 ports
-                            for port_rc in node_ref.ports.iter().rev() {
+                                    log::debug!("Adding switch port {}, state: {:?}, desc: ('{}') to discovery stack. Path: [{}]", 
+                                    port_rc.borrow().number,
+                                    *link_state,
+                                    node_rc.borrow().description.as_deref().unwrap_or("N/A"), 
+                                    Fabric::format_path(&path_to_remote_node));
 
-                                if node_ref.node_type == enums::IbNodeType::Switch &&
-                                    (
-                                    port_rc.borrow().link_state == enums::IbPortLinkLayerState::Active || 
-                                    port_rc.borrow().link_state == enums::IbPortLinkLayerState::Init
-                                    ) 
-                                {
-                                    let entry = (port_rc.clone(), path_to_remote_node);
-                                    log::debug!("Adding entry to stack: {:?}", entry);
-                                    stack.push_front(entry);
+                                    stack.push_front((port_rc.clone(), path_to_remote_node));
                                 }
                             }
                         }
                         node_rc
                     },
                     Err(e) => {
-                        log::debug!("Error discovering remote node on path: {:?}, error: {:?}", path_to_remote_node, e);
-                        continue
+                        log::warn!("Failed to discover new remote node at path [{}]: {}", 
+                            Fabric::format_path(&path_to_remote_node), e
+                        );
+                        continue;
                     },
                 }
-
             };
 
-            // Assign remote_port to local_port.remote_port
-            let remote_node_ref = remote_node_rc.borrow();
-
-            // Look for the local_port returned in the node_info
-            if let Some(remote_port_rc) = remote_node_ref.ports.iter().find(
-                |p| p.borrow().number == remote_node_port
-            ) {
-
-                local_port_ref.remote_port = Some(
-                    Rc::downgrade(remote_port_rc)
+            let remote_node_port = remote_node_info.local_port;
+            if let Some(remote_port_rc) = remote_node_rc.borrow().ports.iter().find(|p| p.borrow().number == remote_node_port) {
+                log::trace!(
+                    "Linking '{}' Port {} <--> '{}' Port {}",
+                    parent_ref.description.as_deref().unwrap_or("N/A"),
+                    local_port_rc.borrow().number,
+                    remote_node_rc.borrow().description.as_deref().unwrap_or("N/A"),
+                    remote_port_rc.borrow().number
                 );
-
-                let mut remote_port_ref = remote_port_rc.borrow_mut();
-                remote_port_ref.remote_port = Some(
-                    Rc::downgrade(&local_port_rc)
-                );
-
+                local_port_rc.borrow_mut().remote_port = Some(Rc::downgrade(remote_port_rc));
+                remote_port_rc.borrow_mut().remote_port = Some(Rc::downgrade(&local_port_rc));
             } else {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
-                        "Inconsistent fabric: remote node 0x{:x} reported port {} which was not found", 
-                    remote_node_ref.node_guid, 
-                    remote_node_port
-                )
+                        "Inconsistent fabric: remote node 0x{:X} ('{}') reported port {} which was not found",
+                        remote_node_rc.borrow().node_guid.to_be(),
+                        remote_node_rc.borrow().description.as_deref().unwrap_or("N/A"),
+                        remote_node_port
+                    )
                 ));
             }
-
-
         }
 
-        // Add nodes to the collections
         for node_rc in &self.nodes {
             match node_rc.borrow().node_type {
                 enums::IbNodeType::Switch => self.switches.push(Rc::downgrade(node_rc)),
@@ -546,26 +584,28 @@ impl Fabric {
             }
         }
 
+        let ts_diff = time::Instant::now() - start_ts;
+        log::info!("Discovery complete. Found {} nodes ({} switches, {} HCAs).", 
+            self.nodes.len(), self.switches.len(), self.hcas.len());
 
-        let end_ts = time::Instant::now();
-        let ts_diff = end_ts - start_ts;
-
-        log::info!("Discovery complete. Found {} nodes ({} switches, {} HCAs).", self.nodes.len(), self.switches.len(), self.hcas.len());
-        log::info!("MADs Sent: {}, Timeouts: {}, Errors: {}", self.mads_sent, self.mad_timeouts, self.mad_errors);
+        log::info!("MADs Sent: {}, Timeouts: {}, Errors: {}", 
+            self.mads_sent, self.mad_timeouts, self.mad_errors);
+        
         let zero_duration = time::Duration::new(0, 0);
-        if !self.ni_timings.is_empty() { // <-- ADD THIS GUARD
+        if !self.ni_timings.is_empty() {
             let ni_time_min = self.ni_timings.iter().min().unwrap_or(&zero_duration);
             let ni_time_max = self.ni_timings.iter().max().unwrap_or(&zero_duration);
             let ni_time_sum: u128 = self.ni_timings.iter().map(|d| d.as_micros()).sum();
             let ni_avg = ni_time_sum / self.ni_timings.len() as u128;
-            log::info!("Discovery Duration: {}s, NI Avg: {}us, Max: {}us, Min: {}us",
+            log::info!(
+                "Discovery Duration: {:.2}s, NI RTT Avg: {}us, Max: {}us, Min: {}us",
                 ts_diff.as_secs_f64(),
                 ni_avg,
                 ni_time_max.as_micros(),
                 ni_time_min.as_micros()
             );
         } else {
-            log::info!("Discovery Duration: {}s. No NodeInfo timings were recorded.", ts_diff.as_secs_f64());
+            log::info!("Discovery Duration: {:.2}s. No NodeInfo timings were recorded.", ts_diff.as_secs_f64());
         }
         Ok(())
     }
