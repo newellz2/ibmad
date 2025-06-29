@@ -80,6 +80,11 @@ pub enum MadClasses {
 }
 
 #[derive(Debug, Clone)]
+pub enum Methods {
+    Get = 0x1,
+}
+
+#[derive(Debug, Clone)]
 pub enum SmiAttrID {
     NodeDesc = 0x10,
     NodeInfo = 0x11,
