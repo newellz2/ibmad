@@ -30,6 +30,10 @@ pub struct IbMadPort {
     pub file: fs::File,
 }
 
+pub struct IbMadPortAsync {
+    pub file: tokio::fs::File,
+}
+
 pub fn open_port(hca: &IbCa) -> Result<IbMadPort, io::Error> {
     if let Some(dev_paths) = &hca.dev_paths {
         match &dev_paths.umad_dev_path {
@@ -142,6 +146,48 @@ pub fn recv(port: &mut IbMadPort, umad: &mut ib_user_mad, timeout_ms: u32) -> io
         *umad = val;
     } else {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "error converting to umad"));
+    }
+
+    Ok(rc)
+}
+
+
+pub fn send_wfile(port: &mut std::fs::File, umad: &ib_user_mad) -> io::Result<usize> {
+    if port.as_raw_fd() < 0 {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid file descriptor"));
+    }
+    if umad.length as usize > umad.data.len() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "length exceeds buffer"));
+    }
+    let bytes = umad.to_bytes();
+    log::debug!("send - MAD bytes:\n{}", dump_bytes(&bytes));
+    port.write(&bytes)
+}
+
+
+pub fn recv_wfile(port: &mut std::fs::File, umad: &mut ib_user_mad) -> io::Result<usize> {
+
+    let mut buf = vec![0u8; std::mem::size_of::<ib_user_mad>()];
+
+    let rc = port.read(&mut buf)?;
+
+    log::debug!("recv - MAD bytes: length ({}) \n{}", buf.len(), dump_bytes(&buf));
+
+    if rc == 0 {
+        // A read of 0 bytes is a valid EOF, handle as you see fit.
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "read 0 bytes, connection may be closed"));
+    }
+
+    if rc != buf.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData, // More appropriate than TimedOut
+            format!("short read, bytes read: {}, expected: {}", rc, buf.len())
+        ));
+    }
+    if let Some(val) = ib_user_mad::from_bytes(&buf) {
+        *umad = val;
+    } else {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "error converting bytes to umad"));
     }
 
     Ok(rc)
