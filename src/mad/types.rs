@@ -89,9 +89,12 @@ impl ib_user_mad {
         let tid_end = tid_offset + 8;
 
         if self.data.len() < tid_end {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Data too short for TID"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Data too short for TID",
+            ));
         }
-        
+
         let tid_bytes: [u8; 8] = self.data[tid_offset..tid_end].try_into().unwrap();
         Ok(u64::from_be_bytes(tid_bytes))
     }
@@ -100,7 +103,7 @@ impl ib_user_mad {
         match (self.get_tid(), other.get_tid()) {
             (Ok(self_tid), Ok(other_tid)) => {
                 self_tid & 0x0000_0000_ffff_ffff == other_tid & 0x0000_0000_ffff_ffff
-            },
+            }
             _ => false,
         }
     }

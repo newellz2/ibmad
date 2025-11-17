@@ -4,7 +4,6 @@ mod ca_tests {
 
     #[test]
     fn get_cas_names_success() {
-
         let _ = env_logger::try_init();
 
         if !Path::new(ibmad::ca::SYS_INFINIBAND).exists() {
@@ -12,11 +11,11 @@ mod ca_tests {
             return;
         }
 
-        match  ibmad::ca::get_cas_names(){
-            Ok(cas) =>{
-                assert!( cas.len() > 0, "No CAs found.");
-                for _ca in cas.iter(){
-                    // 
+        match ibmad::ca::get_cas_names() {
+            Ok(cas) => {
+                assert!(cas.len() > 0, "No CAs found.");
+                for _ca in cas.iter() {
+                    //
                 }
             }
             Err(e) => {
@@ -27,7 +26,6 @@ mod ca_tests {
 
     #[test]
     fn get_ca_success() {
-        
         let _ = env_logger::try_init();
 
         if !Path::new(ibmad::ca::SYS_INFINIBAND).exists() {
@@ -35,11 +33,10 @@ mod ca_tests {
             return;
         }
 
-        match  ibmad::ca::get_ca("mlx5_0"){
-            Ok(ca) =>{
+        match ibmad::ca::get_ca("mlx5_0") {
+            Ok(ca) => {
                 assert!(!ca.name.is_empty(), "CA not found.");
                 log::debug!("get_ca_success - CA: {:?}", ca);
-
             }
             Err(e) => {
                 assert!(false, "{}", format!("Error finding CA: {:?}", e));
@@ -49,7 +46,6 @@ mod ca_tests {
 
     #[test]
     fn get_cas_success() {
-        
         let _ = env_logger::try_init();
 
         if !Path::new(ibmad::ca::SYS_INFINIBAND).exists() {
@@ -57,8 +53,8 @@ mod ca_tests {
             return;
         }
 
-        match  ibmad::ca::get_cas(){
-            Ok(cas) =>{
+        match ibmad::ca::get_cas() {
+            Ok(cas) => {
                 assert!(cas.len() > 0, "No CAs found.");
             }
             Err(e) => {
@@ -69,7 +65,6 @@ mod ca_tests {
 
     #[test]
     fn get_cas_counters_success() {
-        
         let _ = env_logger::try_init();
 
         if !Path::new(ibmad::ca::SYS_INFINIBAND).exists() {
@@ -77,11 +72,11 @@ mod ca_tests {
             return;
         }
 
-        match  ibmad::ca::get_cas(){
-            Ok(cas) =>{
+        match ibmad::ca::get_cas() {
+            Ok(cas) => {
                 assert!(cas.len() > 0, "No CAs found.");
                 for ca in cas {
-                    for port in ca.ports{
+                    for port in ca.ports {
                         log::debug!("Port: {:?}", port.path);
 
                         match port.get_counters() {
@@ -100,5 +95,4 @@ mod ca_tests {
             }
         }
     }
-
 }

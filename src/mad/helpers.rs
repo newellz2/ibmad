@@ -1,5 +1,4 @@
 pub fn get_bitfield(data: &[u8], bit_offset: usize, width: usize) -> u64 {
-
     assert!((1..=64).contains(&width), "width must be 1-64");
 
     let start_byte = bit_offset / 8;
@@ -20,7 +19,8 @@ pub fn get_bitfield(data: &[u8], bit_offset: usize, width: usize) -> u64 {
     let leading = needed_bytes * 8 - (pos_in_first_byte + width);
     let val = (tmp >> leading) & ((1u128 << width) - 1);
 
-    log::trace!("extract_bitfield - offset: {}, width: {} start_byte: {}, end_byte: {}, bytes: {:?} val: {:x}, shift: {}",
+    log::trace!(
+        "extract_bitfield - offset: {}, width: {} start_byte: {}, end_byte: {}, bytes: {:?} val: {:x}, shift: {}",
         bit_offset,
         width,
         start_byte,
@@ -33,12 +33,10 @@ pub fn get_bitfield(data: &[u8], bit_offset: usize, width: usize) -> u64 {
     val as u64
 }
 
-
 pub fn set_bitfield(data: &mut [u8], bit_offset: usize, width: usize, val: u64) {
-
     assert!((1..=64).contains(&width), "width must be 1-64");
     let val = if width < 64 {
-        val & ((1 << width) - 1)  // Mask out anything more than the width
+        val & ((1 << width) - 1) // Mask out anything more than the width
     } else {
         val
     };
@@ -58,11 +56,12 @@ pub fn set_bitfield(data: &mut [u8], bit_offset: usize, width: usize, val: u64) 
     let total_bits = (end_byte - start_byte) * 8;
     let shift = total_bits - (bit_offset % 8 + width);
 
-    let mask =  ((1u128 << width) - 1) << shift;
+    let mask = ((1u128 << width) - 1) << shift;
     let cur_val_mask = cur_val & !mask;
     let mut new_val = cur_val_mask | ((val as u128) << shift);
 
-    log::trace!("set_bitfield - offset: {}, width: {} start_byte: {}, end_byte: {}, cur_val: {} new_val: {}, shift: {:}, mask: 0x{:x}",
+    log::trace!(
+        "set_bitfield - offset: {}, width: {} start_byte: {}, end_byte: {}, cur_val: {} new_val: {}, shift: {:}, mask: 0x{:x}",
         bit_offset,
         width,
         start_byte,
@@ -77,5 +76,4 @@ pub fn set_bitfield(data: &mut [u8], bit_offset: usize, width: usize, val: u64) 
         data[i] = (new_val & 0xff) as u8;
         new_val >>= 8;
     }
-
 }

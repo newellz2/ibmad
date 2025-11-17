@@ -29,7 +29,7 @@ impl TryFrom<u8> for IbPortPhyState {
 #[derive(Debug, Clone, PartialEq)]
 pub enum IbPortLinkLayerState {
     Nop = 0,
-    Down= 1,
+    Down = 1,
     Init = 2,
     Armed = 3,
     Active = 4,
@@ -54,10 +54,10 @@ impl TryFrom<u8> for IbPortLinkLayerState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum IbNodeType {
-	CA = 1,
-	Switch = 2,
-	Router = 3,
-	Rnic = 4,
+    CA = 1,
+    Switch = 2,
+    Router = 3,
+    Rnic = 4,
 }
 
 impl TryFrom<u8> for IbNodeType {

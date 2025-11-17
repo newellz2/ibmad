@@ -1,6 +1,5 @@
 use std::mem::MaybeUninit;
 
-
 pub const NODE_DESC_OFFSET: usize = 24;
 pub const NODE_DESC_LENGTH: usize = 64;
 

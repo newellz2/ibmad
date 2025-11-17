@@ -49,7 +49,10 @@ impl AsyncMadHandler {
                 Ok(Ok(guard)) => guard,
                 Ok(Err(e)) => return Err(e),
                 Err(_) => {
-                    log::warn!("[handle_recv] Read operation timed out after {:?}", timeout_dur);
+                    log::warn!(
+                        "[handle_recv] Read operation timed out after {:?}",
+                        timeout_dur
+                    );
                     return Err(io::Error::new(io::ErrorKind::TimedOut, "Read timed out"));
                 }
             };
@@ -67,7 +70,6 @@ impl AsyncMadHandler {
             Err(e) => {
                 guard.clear_ready();
                 log::error!("[handle_recv] Error with read guard: {:?}", e);
-
             }
         }
 
@@ -93,9 +95,10 @@ impl AsyncMadHandler {
             Err(e) => {
                 guard.clear_ready();
                 log::error!("[handle_send]  Error with write guard: {:?}", e);
-                Err(
-                    io::Error::new(io::ErrorKind::Other, "[handle_send] I/O operation would block")
-                )
+                Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "[handle_send] I/O operation would block",
+                ))
             }
         }
     }
@@ -194,7 +197,7 @@ impl AsyncMadHandler {
 
     pub fn new(hca: &str) -> Result<Self, io::Error> {
         let ca = ibmad::ca::get_ca(hca)?;
-        let mut mad_port = ibmad::mad::open_port(&ca)?;
+        let mut mad_port = ibmad::mad::open_smp_port(&ca)?;
         let agent_id = ibmad::mad::register_agent(&mut mad_port, 0x81)?;
         let (tx_chan, rx_chan) = tokio::sync::mpsc::channel::<AsyncMessage>(128);
 
@@ -209,7 +212,6 @@ impl AsyncMadHandler {
     }
 
     pub fn start(&mut self) -> Result<(), io::Error> {
-
         let read_file = self.mad_port.file.try_clone()?;
         let write_file = self.mad_port.file.try_clone()?;
 
@@ -470,7 +472,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tid.clone(),
             None,
             agent_id,
-            timeout
+            timeout,
         )))
         .await;
 
@@ -478,7 +480,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start_ts = Instant::now();
     loop {
-
         if tx_chan.capacity() == tx_chan.max_capacity() && smp_map.is_empty() {
             log::info!("[main] No more outstanding requests and channel is empty, exiting.");
             break;
@@ -505,7 +506,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 break;
             }
         }
-
     }
 
     if log::log_enabled!(log::Level::Debug) {
@@ -712,7 +712,7 @@ async fn recv_nodeinfo(
             tid.clone(),
             Some(guid),
             agent_id,
-            timeout
+            timeout,
         )))
         .await;
     requests_sent.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -735,7 +735,7 @@ async fn recv_nodeinfo(
                 tid.clone(),
                 Some(guid),
                 agent_id,
-                timeout
+                timeout,
             )))
             .await;
 
@@ -861,7 +861,7 @@ async fn recv_portinfo(
                 tid.clone(),
                 this_guid_opt,
                 agent_id,
-                timeout
+                timeout,
             )))
             .await;
         requests_sent.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -898,7 +898,11 @@ async fn process_response(
 
                 if log::log_enabled!(log::Level::Debug) {
                     let byte_string = ibmad::dump_bytes(&mad.to_bytes());
-                    log::trace!("[process_response] - TID:{} - Recv UMAD:\n{}", mad_tid, byte_string);
+                    log::trace!(
+                        "[process_response] - TID:{} - Recv UMAD:\n{}",
+                        mad_tid,
+                        byte_string
+                    );
                 }
 
                 match attr_id {
@@ -1005,8 +1009,11 @@ async fn process_response(
             responses_received.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             smp_map.retain(|tid, request| {
                 if request.timestamp.elapsed() > request_deadline {
-                    log::error!("[process_response] Request with TID {} has expired, removing...", tid);
-                    false 
+                    log::error!(
+                        "[process_response] Request with TID {} has expired, removing...",
+                        tid
+                    );
+                    false
                 } else {
                     true
                 }
@@ -1058,8 +1065,9 @@ fn build_and_store_smp(
         );
     }
 
-    let umad_to_send =
-        build_dr_smp_umad(entry.0, attr_id, entry.2, hop_cnt, tid as u64, timeout, 1, agent_id);
+    let umad_to_send = build_dr_smp_umad(
+        entry.0, attr_id, entry.2, hop_cnt, tid as u64, timeout, 1, agent_id,
+    );
 
     let t_smp = TimedSmp {
         guid: guid,

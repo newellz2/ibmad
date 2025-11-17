@@ -1,17 +1,15 @@
-
 fn main() {
     let result = ibmad::ca::get_cas();
- 
+
     // Get the first CA
     if let Ok(cas) = result {
         let ib_ca = cas.first().unwrap();
 
         println!("CA: {:?}", ib_ca);
 
-        match ibmad::mad::open_port(ib_ca) {
+        match ibmad::mad::open_smp_port(ib_ca) {
             Ok(mut port) => {
                 if let Ok(agent_id) = ibmad::mad::register_agent(&mut port, 0x81) {
-
                     let mut dr = ibmad::mad::dr_smp_mad {
                         m_key: 0,
                         drslid: 0xffff,
@@ -48,7 +46,7 @@ fn main() {
                             std::mem::size_of::<ibmad::mad::dr_smp_mad>(),
                         )
                     };
-                    
+
                     mad.data[..dr_bytes.len()].copy_from_slice(dr_bytes);
 
                     let mut umad = ibmad::mad::ib_user_mad {
@@ -81,37 +79,33 @@ fn main() {
                             std::mem::size_of::<ibmad::mad::ib_mad>(),
                         )
                     };
-                    
+
                     umad.data[..ib_mad_bytes.len()].copy_from_slice(ib_mad_bytes);
 
                     let r = ibmad::mad::send(&mut port, &umad);
                     match r {
                         Ok(s) => {
                             println!("MAD Sent, size: {}", s)
-                        },
+                        }
                         Err(e) => {
                             eprintln!("Failed to send MAD: {}", e)
-                        },
+                        }
                     }
 
                     let _ = ibmad::mad::recv(&mut port, &mut umad, 1000);
 
-                    let dr: &ibmad::mad::dr_smp_mad = unsafe {
-                        &*(umad.data[24..].as_ptr() as *const ibmad::mad::dr_smp_mad)
-                    };
+                    let dr: &ibmad::mad::dr_smp_mad =
+                        unsafe { &*(umad.data[24..].as_ptr() as *const ibmad::mad::dr_smp_mad) };
 
                     let node_desc_bytes = &dr.attr_layout[..64];
                     let node_desc = String::from_utf8_lossy(node_desc_bytes);
 
                     println!("Response Received, NodeDesc: '{}'", node_desc);
-
                 }
-            },
+            }
             Err(e) => {
                 eprintln!("Failed to open port: {}", e)
-            },
+            }
         }
     }
-
-
 }

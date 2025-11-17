@@ -1,4 +1,3 @@
-
 use std::collections::HashMap;
 use std::fs;
 use std::io;
@@ -10,7 +9,6 @@ use log;
 use crate::enums;
 
 pub const SYS_INFINIBAND: &str = "/sys/class/infiniband";
-
 
 //CA
 const SYS_CA_BOARD_ID: &str = "board_id";
@@ -26,28 +24,39 @@ const SYS_CA_NODE_DESC: &str = "node_desc";
 const SYS_PORT_LMC: &str = "lid_mask_count";
 const SYS_PORT_SMLID: &str = "sm_lid";
 const SYS_PORT_SMSL: &str = "sm_sl";
-const SYS_PORT_LID: &str ="lid";
+const SYS_PORT_LID: &str = "lid";
 const SYS_PORT_STATE: &str = "state"; // Logical State
 const SYS_PORT_PHY_STATE: &str = "phys_state";
 const SYS_PORT_CAPMASK: &str = "cap_mask";
 const SYS_PORT_RATE: &str = "rate";
-const SYS_PORT_GID: &str= "gids/0";
+const SYS_PORT_GID: &str = "gids/0";
 const SYS_PORT_LINK_LAYER: &str = "link_layer";
 
 const SYS_CA_UMAD_PATH: &str = "device/infiniband_mad";
 const DEV_CA_UMAD_PATH: &str = "/dev/infiniband";
 
-const SYS_CA_PROPERTIES: [&str; 8] =  [
-    SYS_CA_BOARD_ID, SYS_CA_NODE_TYPE, SYS_CA_FW_VERS,
-    SYS_CA_HW_VERS, SYS_CA_TYPE, SYS_CA_NODE_GUID,
-    SYS_CA_SYS_GUID, SYS_CA_NODE_DESC,
+const SYS_CA_PROPERTIES: [&str; 8] = [
+    SYS_CA_BOARD_ID,
+    SYS_CA_NODE_TYPE,
+    SYS_CA_FW_VERS,
+    SYS_CA_HW_VERS,
+    SYS_CA_TYPE,
+    SYS_CA_NODE_GUID,
+    SYS_CA_SYS_GUID,
+    SYS_CA_NODE_DESC,
 ];
 
-const SYS_CA_PORT_PROPERTIES: [&str; 10] =  [
-    SYS_PORT_LMC, SYS_PORT_SMLID, SYS_PORT_SMSL,
-    SYS_PORT_LID, SYS_PORT_STATE, SYS_PORT_PHY_STATE,
-    SYS_PORT_CAPMASK, SYS_PORT_RATE,
-    SYS_PORT_GID, SYS_PORT_LINK_LAYER
+const SYS_CA_PORT_PROPERTIES: [&str; 10] = [
+    SYS_PORT_LMC,
+    SYS_PORT_SMLID,
+    SYS_PORT_SMSL,
+    SYS_PORT_LID,
+    SYS_PORT_STATE,
+    SYS_PORT_PHY_STATE,
+    SYS_PORT_CAPMASK,
+    SYS_PORT_RATE,
+    SYS_PORT_GID,
+    SYS_PORT_LINK_LAYER,
 ];
 
 const SYS_CA_PORT_COUNTERS_DIR: &str = "counters";
@@ -70,10 +79,10 @@ pub struct IbCaPort {
     pub pkeys: Vec<u64>,
 }
 
-
 #[derive(Debug)]
 pub struct IbCaDevPaths {
     pub umad_dev_path: Option<PathBuf>,
+    pub smi_umad_dev_path: Option<PathBuf>,
     pub issm_dev_path: Option<PathBuf>,
 }
 
@@ -92,8 +101,8 @@ pub struct IbCa {
     pub dev_paths: Option<IbCaDevPaths>,
 }
 
-impl IbCaPort  {
-    pub fn get_counters(&self) -> Result<HashMap<String,u64>, io::Error> {
+impl IbCaPort {
+    pub fn get_counters(&self) -> Result<HashMap<String, u64>, io::Error> {
         let mut counters = HashMap::new();
 
         let counters_path = PathBuf::from(&self.path).join(SYS_CA_PORT_COUNTERS_DIR);
@@ -108,15 +117,13 @@ impl IbCaPort  {
                         counters.insert(name, v);
                     }
                 }
-
             }
         }
 
         Ok(counters)
-
     }
 
-    pub fn get_hw_counters(&self) -> Result<HashMap<String,u64>, io::Error> {
+    pub fn get_hw_counters(&self) -> Result<HashMap<String, u64>, io::Error> {
         let mut counters = HashMap::new();
 
         let counters_path = PathBuf::from(&self.path).join(SYS_CA_PORT_HW_COUNTERS_DIR);
@@ -131,14 +138,11 @@ impl IbCaPort  {
                         counters.insert(name, v);
                     }
                 }
-
             }
         }
 
         Ok(counters)
-
     }
-
 }
 
 pub fn get_cas_names() -> Result<Vec<String>, std::io::Error> {
@@ -147,33 +151,33 @@ pub fn get_cas_names() -> Result<Vec<String>, std::io::Error> {
 
     log::debug!("Reading directory: {}", SYS_INFINIBAND);
     match fs::exists(SYS_INFINIBAND) {
-        Ok(r) => {
-            match r {
-                true => {
-                    log::debug!("{} directory exists", SYS_INFINIBAND);
-                    for entry in fs::read_dir(SYS_INFINIBAND)? {
-                        let entry = entry?;
-                        let file_name = entry.file_name().into_string().unwrap();
-                        log::trace!("Found entry, path={:?} filename={}", entry.path(), file_name);
-                        cas.push(
-                            file_name
-                        );
-                    }
-                }
-                false => {
-                    log::debug!("Directory '{}' does not exist", SYS_INFINIBAND);
-                    let err = std::io::Error::new(
-                        io::ErrorKind::NotFound, 
-                        io::Error::other("Directory does not exist".to_string())
+        Ok(r) => match r {
+            true => {
+                log::debug!("{} directory exists", SYS_INFINIBAND);
+                for entry in fs::read_dir(SYS_INFINIBAND)? {
+                    let entry = entry?;
+                    let file_name = entry.file_name().into_string().unwrap();
+                    log::trace!(
+                        "Found entry, path={:?} filename={}",
+                        entry.path(),
+                        file_name
                     );
-                    return Err(err)
+                    cas.push(file_name);
                 }
             }
-        }
+            false => {
+                log::debug!("Directory '{}' does not exist", SYS_INFINIBAND);
+                let err = std::io::Error::new(
+                    io::ErrorKind::NotFound,
+                    io::Error::other("Directory does not exist".to_string()),
+                );
+                return Err(err);
+            }
+        },
         Err(e) => {
             log::debug!("Error checking if {} exists: {}", SYS_INFINIBAND, e);
             let err = std::io::Error::new(io::ErrorKind::Other, e);
-            return Err(err)
+            return Err(err);
         }
     }
 
@@ -182,25 +186,25 @@ pub fn get_cas_names() -> Result<Vec<String>, std::io::Error> {
 }
 
 pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbCaPort>, io::Error> {
-
     let mut ports: Vec<IbCaPort> = Vec::new();
 
-    let ports_path = path.join(
-        PathBuf::from("ports")
-    );
+    let ports_path = path.join(PathBuf::from("ports"));
 
     match fs::exists(&ports_path) {
         Ok(r) => {
             match r {
                 true => {
                     for entry in fs::read_dir(&ports_path)? {
-
                         let entry: fs::DirEntry = entry?;
                         let file_name = entry.file_name().into_string().unwrap();
 
-                        log::trace!("get_ib_ports_info - Found port, Path: {:?}, Filename: {}", entry.path(), file_name);
+                        log::trace!(
+                            "get_ib_ports_info - Found port, Path: {:?}, Filename: {}",
+                            entry.path(),
+                            file_name
+                        );
 
-                        let mut port = IbCaPort{
+                        let mut port = IbCaPort {
                             path: entry.path().to_str().unwrap().to_owned(),
                             number: 0,
                             phy_state: enums::IbPortPhyState::Polling,
@@ -220,28 +224,45 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbCaPort>, io::Erro
                             Ok(num) => {
                                 log::trace!("get_ib_ports_info - Parsed port number: {}", num);
                                 port.number = num
-                            },
+                            }
                             Err(e) => {
-                                log::trace!("get_ib_ports_info - Failed to parse port number: {:?}", e);
+                                log::trace!(
+                                    "get_ib_ports_info - Failed to parse port number: {:?}",
+                                    e
+                                );
                             }
                         }
 
                         let phy_state_path = entry.path().join(SYS_PORT_PHY_STATE);
-                        log::trace!("get_ib_ports_info - Path: {:?}, phys_state Path: '{:?}'", entry.path(), phy_state_path);
+                        log::trace!(
+                            "get_ib_ports_info - Path: {:?}, phys_state Path: '{:?}'",
+                            entry.path(),
+                            phy_state_path
+                        );
 
                         let data = fs::read(phy_state_path)?;
                         let phy_state_str = String::from_utf8_lossy(&data);
                         let phy_state_str = phy_state_str.trim();
 
-                        log::trace!("get_ib_ports_info - Path: {:?}, PhyState File Value: '{}'", entry.path(), phy_state_str);
+                        log::trace!(
+                            "get_ib_ports_info - Path: {:?}, PhyState File Value: '{}'",
+                            entry.path(),
+                            phy_state_str
+                        );
 
                         match phy_state_str.split(':').next().unwrap_or("-1") {
                             "5" => {
-                                log::trace!("get_ib_ports_info - Port '{}' has LinkUp state.", phy_state_str);
+                                log::trace!(
+                                    "get_ib_ports_info - Port '{}' has LinkUp state.",
+                                    phy_state_str
+                                );
                                 port.phy_state = enums::IbPortPhyState::LinkUp;
                             }
                             _ => {
-                                log::trace!("get_ib_ports_info - Port '{}' has unknown state.", phy_state_str);
+                                log::trace!(
+                                    "get_ib_ports_info - Port '{}' has unknown state.",
+                                    phy_state_str
+                                );
                                 port.phy_state = enums::IbPortPhyState::Polling;
                             }
                         }
@@ -251,19 +272,44 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbCaPort>, io::Erro
                             if file_path.exists() {
                                 if let Ok(data) = fs::read_to_string(&file_path) {
                                     match *prop {
-                                        SYS_PORT_LINK_LAYER =>  port.link_layer = Some((&data.trim()).to_string()),
-                                        SYS_PORT_RATE =>  port.rate = Some((&data.trim()).to_string()),
-                                        SYS_PORT_SMLID => port.sm_lid = u32::from_str_radix(&data[2..].trim(), 16).unwrap(),
-                                        SYS_PORT_SMSL => port.sm_sl = u8::from_str_radix(&data.trim(), 16).unwrap(),
-                                        SYS_PORT_LID => port.lid = u32::from_str_radix(&data[2..].trim(), 16).unwrap(),
-                                        SYS_PORT_LMC => port.lmc = u32::from_str_radix(&data.trim(), 16).unwrap(),
-                                        SYS_PORT_CAPMASK => port.cap_mask = u32::from_str_radix(&data[2..].trim(), 16).unwrap(),
-                                        SYS_PORT_GID => port.gid = u128::from_str_radix( &data.replace(":", "").trim(), 16).unwrap(),
-                                        _ => {}, // Do Nothing
+                                        SYS_PORT_LINK_LAYER => {
+                                            port.link_layer = Some((&data.trim()).to_string())
+                                        }
+                                        SYS_PORT_RATE => {
+                                            port.rate = Some((&data.trim()).to_string())
+                                        }
+                                        SYS_PORT_SMLID => {
+                                            port.sm_lid =
+                                                u32::from_str_radix(&data[2..].trim(), 16).unwrap()
+                                        }
+                                        SYS_PORT_SMSL => {
+                                            port.sm_sl =
+                                                u8::from_str_radix(&data.trim(), 16).unwrap()
+                                        }
+                                        SYS_PORT_LID => {
+                                            port.lid =
+                                                u32::from_str_radix(&data[2..].trim(), 16).unwrap()
+                                        }
+                                        SYS_PORT_LMC => {
+                                            port.lmc =
+                                                u32::from_str_radix(&data.trim(), 16).unwrap()
+                                        }
+                                        SYS_PORT_CAPMASK => {
+                                            port.cap_mask =
+                                                u32::from_str_radix(&data[2..].trim(), 16).unwrap()
+                                        }
+                                        SYS_PORT_GID => {
+                                            port.gid = u128::from_str_radix(
+                                                &data.replace(":", "").trim(),
+                                                16,
+                                            )
+                                            .unwrap()
+                                        }
+                                        _ => {} // Do Nothing
                                     }
                                 }
                             }
-                        };
+                        }
 
                         let state_path = entry.path().join(SYS_PORT_STATE);
                         if state_path.exists() {
@@ -296,7 +342,9 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbCaPort>, io::Erro
                                 let pk_entry = pk_entry?;
                                 if let Ok(data) = fs::read_to_string(pk_entry.path()) {
                                     let val_str = data.trim().trim_start_matches("0x");
-                                    if let Ok(v) = u64::from_str_radix(val_str, 16).or_else(|_| val_str.parse::<u64>()) {
+                                    if let Ok(v) = u64::from_str_radix(val_str, 16)
+                                        .or_else(|_| val_str.parse::<u64>())
+                                    {
                                         port.pkeys.push(v);
                                     }
                                 }
@@ -308,74 +356,163 @@ pub fn get_ib_ports_info(path: &path::PathBuf) -> Result<Vec<IbCaPort>, io::Erro
                     }
                 }
                 false => {
-                    log::trace!("get_ib_ports_info - Failed to find port path: {:?}", &ports_path);
+                    log::trace!(
+                        "get_ib_ports_info - Failed to find port path: {:?}",
+                        &ports_path
+                    );
                 }
             }
         }
 
         Err(e) => {
-            log::debug!("get_ib_ports_info - Error checking if {} exists: {}", SYS_INFINIBAND, e);
+            log::debug!(
+                "get_ib_ports_info - Error checking if {} exists: {}",
+                SYS_INFINIBAND,
+                e
+            );
             let err = std::io::Error::new(io::ErrorKind::Other, e);
-            return Err(err)
+            return Err(err);
         }
     }
 
     Ok(ports)
-    
 }
 
 pub fn get_ca_dev_paths(path: &path::PathBuf) -> Option<IbCaDevPaths> {
-    let mut ib_ca_dev_paths = IbCaDevPaths {
-        umad_dev_path: None,
-        issm_dev_path: None,
-    };
+    let ca_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_string();
+
+    let mut best_umad: Option<(u32, PathBuf)> = None;
+    let mut fallback_umad: Option<(u32, PathBuf)> = None;
+    let mut best_smi_umad: Option<(u32, PathBuf)> = None;
+    let mut best_issm: Option<(u32, PathBuf)> = None;
 
     let sys_path = path.join(SYS_CA_UMAD_PATH);
 
     log::debug!("get_ca_dev_paths - Checking sys path {:?}", sys_path);
-    match sys_path.exists() {
-        true =>{
-            for entry in fs::read_dir(sys_path).ok()? {
-                let entry = entry.ok()?;
-                match entry.file_name().to_str() {
-                    Some(file_name) => {
+    if sys_path.exists() {
+        for entry in fs::read_dir(sys_path).ok()? {
+            let entry = entry.ok()?;
+            let file_name_os = entry.file_name();
+            let file_name = match file_name_os.to_str() {
+                Some(name) => name,
+                None => continue,
+            };
 
-                        let file_path = path::PathBuf::from(DEV_CA_UMAD_PATH).join(file_name);
+            let dev_path = PathBuf::from(DEV_CA_UMAD_PATH).join(file_name);
+            if !dev_path.exists() {
+                continue;
+            }
 
-                        log::debug!("get_ca_dev_paths - Checking for device path: {:?}", file_path);
-                        if file_name.starts_with("umad") {
-                            if file_path.exists() {
-                                log::debug!("get_ca_dev_paths - Found device path :{:?}", file_path);
-                                ib_ca_dev_paths.umad_dev_path = Some(file_path);
-                            }
+            let ibdev_name = fs::read_to_string(entry.path().join("ibdev"))
+                .ok()
+                .map(|s| s.trim().to_string());
 
-                        } else if file_name.starts_with("issm") {
-                            if file_path.exists() {
-                                log::debug!("get_ca_dev_paths - Found device path: {:?}", file_path);
-                                ib_ca_dev_paths.issm_dev_path = Some(file_path);
-                            }
+            log::debug!(
+                "get_ca_dev_paths - Checking device {:?} (ibdev: {:?})",
+                dev_path,
+                ibdev_name
+            );
 
-                        }
+            if let Some(idx) = file_name
+                .strip_prefix("umad")
+                .and_then(|n| n.parse::<u32>().ok())
+            {
+                match &fallback_umad {
+                    None => fallback_umad = Some((idx, dev_path.clone())),
+                    Some((best_idx, _)) if idx < *best_idx => {
+                        fallback_umad = Some((idx, dev_path.clone()))
                     }
-                    _ => {}, // Do Nothing
-
+                    _ => {}
                 }
 
+                if let Some(ref ibdev) = ibdev_name {
+                    if ibdev == &ca_name {
+                        match &best_umad {
+                            None => best_umad = Some((idx, dev_path.clone())),
+                            Some((best_idx, _)) if idx < *best_idx => {
+                                best_umad = Some((idx, dev_path.clone()))
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    } else if ibdev.starts_with("smi") {
+                        match &best_smi_umad {
+                            None => best_smi_umad = Some((idx, dev_path.clone())),
+                            Some((best_idx, _)) if idx < *best_idx => {
+                                best_smi_umad = Some((idx, dev_path.clone()))
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+                }
+            } else if let Some(idx) = file_name
+                .strip_prefix("issm")
+                .and_then(|n| n.parse::<u32>().ok())
+            {
+                match &best_issm {
+                    None => best_issm = Some((idx, dev_path.clone())),
+                    Some((best_idx, _)) if idx < *best_idx => {
+                        best_issm = Some((idx, dev_path.clone()))
+                    }
+                    _ => {}
+                }
             }
-        },
-        false => {
-            log::debug!("get_ca_dev_paths - sys path '{:?}' does not exist.", sys_path);
-        },
+        }
+    } else {
+        log::debug!(
+            "get_ca_dev_paths - sys path '{:?}' does not exist.",
+            sys_path
+        );
     }
-    Some(ib_ca_dev_paths)
+
+    let mut umad_dev_path: Option<PathBuf> = None;
+    if let Some((idx, path)) = best_umad.or(fallback_umad) {
+        log::debug!(
+            "get_ca_dev_paths - Selected UMAD device index {} path {:?}",
+            idx,
+            path
+        );
+        umad_dev_path = Some(path);
+    }
+
+    let mut smi_umad_dev_path: Option<PathBuf> = None;
+    if let Some((idx, path)) = best_smi_umad {
+        log::debug!(
+            "get_ca_dev_paths - Selected SMI UMAD device index {} path {:?}",
+            idx,
+            path
+        );
+        smi_umad_dev_path = Some(path);
+    }
+
+    let mut issm_dev_path: Option<PathBuf> = None;
+    if let Some((idx, path)) = best_issm {
+        log::debug!(
+            "get_ca_dev_paths - Selected ISSM device index {} path {:?}",
+            idx,
+            path
+        );
+        issm_dev_path = Some(path);
+    }
+
+    Some(IbCaDevPaths {
+        umad_dev_path,
+        smi_umad_dev_path,
+        issm_dev_path,
+    })
 }
 
-pub fn get_ca (hca_name: &str) -> Result<IbCa, std::io::Error> {
+pub fn get_ca(hca_name: &str) -> Result<IbCa, std::io::Error> {
     let hca_path = path::PathBuf::from(SYS_INFINIBAND).join(hca_name);
 
     log::debug!("get_ca - hca_path: {:?}", hca_path);
 
-    match hca_path.exists(){
+    match hca_path.exists() {
         true => {
             let ports = get_ib_ports_info(&hca_path)?;
             log::trace!("get_ca - get_ib_ports_info result:{:?}", ports);
@@ -400,28 +537,28 @@ pub fn get_ca (hca_name: &str) -> Result<IbCa, std::io::Error> {
                     if let Ok(data) = fs::read_to_string(&file_path) {
                         match *prop {
                             SYS_CA_BOARD_ID => ib_ca.board_id = Some(data.trim().to_owned()),
-                            SYS_CA_TYPE=> ib_ca.hca_type = Some(data.trim().to_owned()),
+                            SYS_CA_TYPE => ib_ca.hca_type = Some(data.trim().to_owned()),
                             SYS_CA_FW_VERS => ib_ca.fw_ver = Some(data.trim().to_owned()),
                             SYS_CA_HW_VERS => ib_ca.hw_rev = Some(data.trim().to_owned()),
                             SYS_CA_NODE_GUID => ib_ca.node_guid = Some(data.trim().to_owned()),
                             SYS_CA_NODE_TYPE => ib_ca.node_type = Some(data.trim().to_owned()),
                             SYS_CA_SYS_GUID => ib_ca.sys_image_guid = Some(data.trim().to_owned()),
                             SYS_CA_NODE_DESC => ib_ca.node_desc = Some(data.trim().to_owned()),
-                            _ => {}, //Do Nothing
+                            _ => {} //Do Nothing
                         }
                     }
                 }
-            };
+            }
 
             Ok(ib_ca)
-        },
+        }
         false => {
             log::debug!("Directory '{:?}' does not exist", hca_path);
             let err = std::io::Error::new(
-                io::ErrorKind::NotFound, 
-                io::Error::other("Directory does not exist".to_string())
+                io::ErrorKind::NotFound,
+                io::Error::other("Directory does not exist".to_string()),
             );
-            return Err(err)
+            return Err(err);
         }
     }
 }
@@ -432,39 +569,43 @@ pub fn get_cas() -> Result<Vec<IbCa>, std::io::Error> {
 
     log::debug!("Reading directory: {}", SYS_INFINIBAND);
     match fs::exists(SYS_INFINIBAND) {
-        Ok(r) => {
-            match r {
-                true => {
-                    log::debug!("{} directory exists", SYS_INFINIBAND);
-                    for entry in fs::read_dir(SYS_INFINIBAND)? {
-                        let entry = entry?;
-                        let file_name = entry.file_name().into_string().unwrap();
+        Ok(r) => match r {
+            true => {
+                log::debug!("{} directory exists", SYS_INFINIBAND);
+                for entry in fs::read_dir(SYS_INFINIBAND)? {
+                    let entry = entry?;
+                    let file_name = entry.file_name().into_string().unwrap();
 
-                        let ib_ca = get_ca(&file_name)?;
-                        log::trace!("get_cas - Found entry, path={:?} filename={}", entry.path(), file_name);
-
-
-                        log::trace!("get_cas - adding ca to return vec: {:?}", ib_ca);
-                        cas.push(ib_ca);
-                    }
-                }
-                false => {
-                    log::debug!("Directory '{}' does not exist", SYS_INFINIBAND);
-                    let err = std::io::Error::new(
-                        io::ErrorKind::NotFound, 
-                        io::Error::other("Directory does not exist".to_string())
+                    let ib_ca = get_ca(&file_name)?;
+                    log::trace!(
+                        "get_cas - Found entry, path={:?} filename={}",
+                        entry.path(),
+                        file_name
                     );
-                    return Err(err)
+
+                    log::trace!("get_cas - adding ca to return vec: {:?}", ib_ca);
+                    cas.push(ib_ca);
                 }
             }
-        }
+            false => {
+                log::debug!("Directory '{}' does not exist", SYS_INFINIBAND);
+                let err = std::io::Error::new(
+                    io::ErrorKind::NotFound,
+                    io::Error::other("Directory does not exist".to_string()),
+                );
+                return Err(err);
+            }
+        },
         Err(e) => {
             log::debug!("Error checking if {} exists: {}", SYS_INFINIBAND, e);
             let err = std::io::Error::new(io::ErrorKind::Other, e);
-            return Err(err)
+            return Err(err);
         }
     }
 
-    log::debug!("get_linkup_cas_names successfully returned {} entries", cas.len());
+    log::debug!(
+        "get_linkup_cas_names successfully returned {} entries",
+        cas.len()
+    );
     Ok(cas)
 }
