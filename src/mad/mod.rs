@@ -173,7 +173,7 @@ pub fn query_port_counters_extended(
     let perf_bytes = perf_payload.to_bytes();
     ib_mad_payload.data[..perf_bytes.len()].copy_from_slice(&perf_bytes);
 
-    let mut request = ib_user_mad {
+    let request = ib_user_mad {
         agent_id,
         status: 0,
         timeout_ms,
@@ -198,7 +198,12 @@ pub fn query_port_counters_extended(
     };
 
     let ib_mad_bytes = ib_mad_payload.to_bytes();
+    let mut request = request;
     request.data[..ib_mad_bytes.len()].copy_from_slice(&ib_mad_bytes);
+
+    // Kernel handles retries/timeouts based on the ib_user_mad fields above.
+    // Wait up to the worst-case kernel time for a single request.
+    let total_timeout_ms = timeout_ms.saturating_mul(retries.saturating_add(1)).saturating_add(50);
 
     send(port, &request)?;
 
@@ -226,7 +231,18 @@ pub fn query_port_counters_extended(
         data: [0; 256],
     };
 
-    recv(port, &mut response, timeout_ms)?;
+    recv(port, &mut response, total_timeout_ms)?;
+
+    let resp_status: u32 = response.status;
+    if resp_status != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!(
+                "PerfQuery transport failed (status {}) for LID {} port {}",
+                resp_status, lid, port_select
+            ),
+        ));
+    }
 
     let recv_mad = ib_mad::from_bytes(&response.data).ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidData, "Failed to parse response MAD")

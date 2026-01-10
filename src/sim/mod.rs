@@ -176,6 +176,18 @@ impl Fabric {
                 let mut current_node: Option<Rc<RefCell<Node>>> = None;
                 let mut current_port: Option<Rc<RefCell<Port>>> = None;
 
+                // Initialize current_node/port from the agent's location (FIRST_HOP)
+                // This allows paths starting with a port number (non-zero) to work.
+                if let Some(node_weak) = self.dr_paths.get(&FIRST_HOP) {
+                    if let Some(first_hop_port) = node_weak.upgrade() {
+                        let port_ref = first_hop_port.borrow();
+                        if let Some(parent_node) = port_ref.parent.upgrade() {
+                            current_node = Some(parent_node);
+                            current_port = Some(first_hop_port.clone());
+                        }
+                    }
+                }
+
                 // --- Path Traversal ---
                 for (index, portnum) in dr_smp.initial_path.iter().enumerate() {
                     if index == 0 && *portnum == 0 {

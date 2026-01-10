@@ -145,6 +145,7 @@ mod discovery_tests {
 
         let mut fabric = ibmad::discovery::Fabric {
             port: port,
+            agent_id: 0,
             node_map: HashMap::new(),
             nodes: Vec::new(),
             hcas: Vec::new(),
@@ -195,6 +196,7 @@ mod discovery_tests {
 
         let mut fabric = ibmad::discovery::Fabric {
             port,
+            agent_id: 0,
             node_map: HashMap::new(),
             nodes: Vec::new(),
             hcas: Vec::new(),
@@ -301,6 +303,7 @@ mod discovery_tests {
 
         let mut fabric = ibmad::discovery::Fabric {
             port,
+            agent_id: 0,
             node_map: HashMap::new(),
             nodes: Vec::new(),
             hcas: Vec::new(),
@@ -378,6 +381,7 @@ mod discovery_tests {
 
         let mut fabric = ibmad::discovery::Fabric {
             port: smp_port,
+            agent_id: 0,
             node_map: HashMap::new(),
             nodes: Vec::new(),
             hcas: Vec::new(),
@@ -505,8 +509,10 @@ mod discovery_tests {
                 match open_smp_port(hca) {
                     Ok(mut port) => {
                         let _ = mad::register_agent(&mut port, 0x81);
+                        let agent_id = mad::register_agent(&mut port, 0x81).unwrap_or(0);
                         let mut fabric = ibmad::discovery::Fabric {
                             port: port,
+                            agent_id,
                             node_map: HashMap::new(),
                             nodes: Vec::new(),
                             hcas: Vec::new(),
@@ -525,8 +531,20 @@ mod discovery_tests {
 
                         match r {
                             Ok(_) => {
-                                for node in fabric.nodes.iter() {
-                                    log::debug!("Node: {:?}", node);
+                                // Avoid dumping the entire port graph (very large); print a concise per-node summary.
+                                for node_arc in &fabric.nodes {
+                                    if let Ok(node) = node_arc.read() {
+                                        log::debug!(
+                                            "Node: desc='{}' guid=0x{:X} type={:?} lid={} local_port={} nports={} ports_vec_len={}",
+                                            node.description.as_deref().unwrap_or("N/A"),
+                                            node.node_guid.to_be(),
+                                            node.node_type,
+                                            node.lid,
+                                            node.local_port,
+                                            node.nports,
+                                            node.ports.len()
+                                        );
+                                    }
                                 }
                             }
                             Err(e) => {
@@ -539,5 +557,157 @@ mod discovery_tests {
             }
             Err(_) => {} // Do nothing
         }
+    }
+
+    #[test]
+    fn test_nvlink_discovery_success() {
+        let _ = env_logger::try_init();
+
+        match ibmad::ca::get_ca("sx_ib_0") {
+            Ok(ca) => {
+                let hca = &ca;
+                match open_smp_port(hca) {
+                    Ok(mut port) => {
+                        let agent_id = mad::register_agent(&mut port, 0x81).unwrap_or(0);
+                        let mut fabric = ibmad::discovery::Fabric {
+                            port: port,
+                            agent_id,
+                            node_map: HashMap::new(),
+                            nodes: Vec::new(),
+                            hcas: Vec::new(),
+                            switches: Vec::new(),
+                            dr_paths: HashMap::new(),
+                            ni_timings: Vec::new(),
+                            retries: 1,
+                            timeout: 50,
+                            mad_errors: 0,
+                            mad_timeouts: 0,
+                            mads_sent: 0,
+                            tid: 1,
+                        };
+
+                        let r = fabric.seq_discover_nvlink();
+
+                        match r {
+                            Ok(_) => {
+                                // Avoid dumping the entire port graph (very large); print a concise per-node summary.
+                                for node_arc in &fabric.nodes {
+                                    if let Ok(node) = node_arc.read() {
+                                        log::debug!(
+                                            "Node: desc='{}' guid=0x{:X} type={:?} lid={} local_port={} nports={} ports_vec_len={}",
+                                            node.description.as_deref().unwrap_or("N/A"),
+                                            node.node_guid.to_be(),
+                                            node.node_type,
+                                            node.lid,
+                                            node.local_port,
+                                            node.nports,
+                                            node.ports.len()
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                log::debug!("Error: {:?}", e)
+                            }
+                        }
+                    }
+                    Err(_) => {} // Do nothing
+                }
+            }
+            Err(_) => {} // Do nothing
+        }
+    }
+
+    fn build_switch_root_fabric(fabric: &mut ibmad::sim::Fabric) {
+        // Create 2 switches connected to each other
+        let switch1 = ibmad::sim::Node::new_switch("switch-1", 0x1001);
+        let switch1_rc = fabric.add_switch(switch1);
+
+        let switch2 = ibmad::sim::Node::new_switch("switch-2", 0x1002);
+        let switch2_rc = fabric.add_switch(switch2);
+
+        // Add ports to switch1
+        {
+            let mut s1 = switch1_rc.borrow_mut();
+            for i in 0..=5 {
+                let port = Port::new_port(i, 100, switch1_rc.clone());
+                s1.ports.push(Rc::new(RefCell::new(port)));
+            }
+        }
+
+        // Add ports to switch2
+        {
+            let mut s2 = switch2_rc.borrow_mut();
+            for i in 0..=5 {
+                let port = Port::new_port(i, 200, switch2_rc.clone());
+                s2.ports.push(Rc::new(RefCell::new(port)));
+            }
+        }
+
+        // Connect switch1 port 1 to switch2 port 1
+        let s1_p1 = switch1_rc.borrow().ports[1].clone(); // Port 0 is at index 0
+        let s2_p1 = switch2_rc.borrow().ports[1].clone();
+        ibmad::sim::connect_ports(&s1_p1, &s2_p1);
+
+        // Set switch1 port 0 as the entry point (simulating running on switch1)
+        let s1_p0 = switch1_rc.borrow().ports[0].clone();
+        // Insert as FIRST_HOP ([0; 64])
+        fabric.dr_paths.insert([0; 64], Rc::downgrade(&s1_p0));
+    }
+
+    #[test]
+    fn test_switch_root_discovery() {
+        let _ = env_logger::try_init();
+
+        let (client, server) = UnixStream::pair().unwrap();
+        let client_file = unsafe { fs::File::from_raw_fd(client.into_raw_fd()) };
+        let server_file = unsafe { fs::File::from_raw_fd(server.into_raw_fd()) };
+
+        let (tx, rx) = channel::<bool>();
+        let barrier = sync::Arc::new(sync::Barrier::new(2));
+        let barrier_clone = barrier.clone();
+
+        thread::spawn(move || {
+            let mut fabric = ibmad::sim::Fabric::new(server_file);
+            build_switch_root_fabric(&mut fabric);
+            barrier_clone.wait();
+            let _ = fabric.run(rx);
+        });
+
+        let port = IbMadPort { file: client_file };
+
+        let mut fabric = ibmad::discovery::Fabric {
+            port,
+            agent_id: 0,
+            node_map: HashMap::new(),
+            nodes: Vec::new(),
+            hcas: Vec::new(),
+            switches: Vec::new(),
+            dr_paths: HashMap::new(),
+            ni_timings: Vec::new(),
+            retries: 1,
+            timeout: 50,
+            mad_errors: 0,
+            mad_timeouts: 0,
+            mads_sent: 0,
+            tid: 1,
+        };
+
+        barrier.wait();
+
+        // Run discovery
+        fabric.seq_discover().expect("Discovery should not fail hard");
+
+        let _ = tx.send(true);
+
+        // Check results
+        // Should find switch-1 and switch-2
+        assert_eq!(fabric.nodes.len(), 2, "Should discover 2 nodes");
+
+        let s1 = fabric.nodes.iter().find(|n| n.read().unwrap().node_guid == 0x1001);
+        assert!(s1.is_some(), "Should find switch-1");
+
+        let s2 = fabric.nodes.iter().find(|n| n.read().unwrap().node_guid == 0x1002);
+        assert!(s2.is_some(), "Should find switch-2");
     }
 }

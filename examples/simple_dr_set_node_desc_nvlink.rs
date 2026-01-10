@@ -13,13 +13,16 @@ fn main() {
             Ok(mut port) => {
                 if let Ok(agent_id) = ibmad::mad::register_agent(&mut port, 0x81) {
                     
-                    for i in 0..100 {
+                    let desc = b"Saturn";
+                    let mut attr_layout = [0; 64];
+                    attr_layout[..desc.len()].copy_from_slice(desc);
+
                     let mut dr = ibmad::mad::dr_smp_mad {
                         m_key: 0,
                         drslid: 0xffff,
                         drdlid: 0xffff,
                         reserved: [0; 28],
-                        attr_layout: [0; 64],
+                        attr_layout,
                         initial_path: [0; 64],
                         return_path: [0; 64],
                     };
@@ -34,7 +37,7 @@ fn main() {
                         base_version: 0x1,
                         mgmt_class: ibmad::mad::IB_MGMT_CLASS_DIRECT_ROUTED_SMP.to_be(),
                         class_version: 0x1,
-                        method: (0x1 as u8).to_be(),
+                        method: (0x2 as u8).to_be(),
                         status: 0,
                         hop_ptr: 0,
                         hop_cnt: 2, // Second position in initial_path
@@ -101,12 +104,8 @@ fn main() {
                     let _ = ibmad::mad::recv(&mut port, &mut umad, 1000);
                     let duration = start.elapsed().as_secs_f64();
                     println!("Duration(s): {}",duration);
-                    let dr: &ibmad::mad::dr_smp_mad =
-                        unsafe { &*(umad.data[24..].as_ptr() as *const ibmad::mad::dr_smp_mad) };
-
-                    //let node_desc_bytes = &dr.attr_layout[..64];
-                    //let node_desc = String::from_utf8_lossy(node_desc_bytes);
-                    }
+                    
+                    println!("Node Description Set to 'Saturn'");
                 }
             }
             Err(e) => {
