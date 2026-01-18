@@ -3,10 +3,10 @@ use std::io::{Read, Write};
 use std::os::fd::{AsFd, AsRawFd};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::{io, mem::MaybeUninit};
+use std::io;
 
-use crate::{ca::IbCa, ib_user_mad_enable_pkey, ib_user_mad_reg_req};
-use crate::{dump_bytes, ib_user_mad_register_agent};
+use crate::{ca::IbCa, ib_user_mad_reg_req2};
+use crate::{dump_bytes, ib_user_mad_register_agent2};
 
 pub mod dr_smp;
 pub mod helpers;
@@ -26,8 +26,16 @@ use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 pub const IB_MGMT_CLASS_PERFORMANCE: u8 = 0x4;
 pub const IB_MGMT_CLASS_LID_ROUTED_SMP: u8 = 0x1;
 pub const IB_MGMT_CLASS_DIRECT_ROUTED_SMP: u8 = 0x81;
-
 pub const IB_DEFAULT_QKEY: u32 = 0x80010000;
+
+const UMAD_SIZE: usize = std::mem::size_of::<ib_user_mad>();
+
+fn umad_bytes(umad: &ib_user_mad) -> &[u8] {
+    unsafe {
+        std::slice::from_raw_parts(umad as *const ib_user_mad as *const u8, UMAD_SIZE)
+    }
+}
+
 
 #[derive(Debug)]
 pub struct IbMadPort {
@@ -42,26 +50,7 @@ fn open_umad_device(path: &Path) -> Result<IbMadPort, io::Error> {
     match fs::File::options().read(true).write(true).open(path) {
         Ok(file) => {
             let mad_port = IbMadPort { file };
-            let fd = mad_port.file.as_raw_fd();
-            let r = unsafe { ib_user_mad_enable_pkey(fd) };
-            match r {
-                Ok(rc) => {
-                    log::debug!(
-                        "open_umad_device - Successfully enabled PKeys on {:?}, rc: {}",
-                        path,
-                        rc
-                    );
-                    Ok(mad_port)
-                }
-                Err(e) => {
-                    log::debug!(
-                        "open_umad_device - Error enabling PKeys on {:?}: {}",
-                        path,
-                        e
-                    );
-                    Err(io::Error::new(io::ErrorKind::Other, e))
-                }
-            }
+            Ok(mad_port)
         }
         Err(e) => {
             log::debug!(
@@ -143,6 +132,7 @@ pub fn query_port_counters_extended(
     retries: u32,
     lid: u16,
     port_select: u8,
+    pkey_index: u16,
 ) -> Result<perf_mad, io::Error> {
     let mut perf_payload = perf_mad {
         pm_key: 0,
@@ -191,7 +181,7 @@ pub fn query_port_counters_extended(
             traffic_class: 0,
             gid: [0; 16],
             flow_label: 0,
-            pkey_index: 0,
+            pkey_index: pkey_index,
             reserved: [0; 6],
         },
         data: [0; 256],
@@ -274,9 +264,8 @@ pub fn query_port_counters_extended(
     })
 }
 pub fn register_agent(port: &mut IbMadPort, mgmt_class: u8) -> Result<u32, io::Error> {
-    let mut req = ib_user_mad_reg_req {
+    let mut req = ib_user_mad_reg_req2 {
         id: 0,
-        method_mask: unsafe { MaybeUninit::<[u32; 4]>::zeroed().assume_init() },
         qpn: if mgmt_class == 0x1 || mgmt_class == 0x81 {
             0
         } else {
@@ -284,20 +273,24 @@ pub fn register_agent(port: &mut IbMadPort, mgmt_class: u8) -> Result<u32, io::E
         },
         mgmt_class,
         mgmt_class_version: 1,
-        oui: unsafe { MaybeUninit::<[u8; 3]>::zeroed().assume_init() },
+        res: 0,
+        flags: 0,
+        method_mask: [0; 2],
+        oui: 0,
         rmpp_version: 0,
+        reserved: [0; 3],
     };
 
-    let req_ptr: *mut ib_user_mad_reg_req = &mut req;
+    let req_ptr: *mut ib_user_mad_reg_req2 = &mut req;
     let fd = port.file.as_raw_fd();
-    let r = unsafe { ib_user_mad_register_agent(fd, req_ptr) };
+    let r = unsafe { ib_user_mad_register_agent2(fd, req_ptr) };
     match r {
         Ok(_rc) => {
             log::debug!("register_agent - registed agent, agent_id: {}", req.id);
             Ok(req.id)
         }
         Err(e) => {
-            log::debug!("register_agent - Failed to register agent, errorno: {}", e);
+            log::debug!("register_agent - Failed to register agent (v2), errorno: {}", e);
             Err(std::io::Error::new(io::ErrorKind::Other, e))
         }
     }
@@ -316,9 +309,10 @@ pub fn send(port: &mut IbMadPort, umad: &ib_user_mad) -> io::Result<usize> {
             "length exceeds buffer",
         ));
     }
-    let bytes = umad.to_bytes();
-    log::debug!("send - MAD bytes:\n{}", dump_bytes(&bytes));
-    port.file.write(&bytes)
+    let bytes = umad_bytes(umad);
+    log::debug!("send - MAD bytes:\n{}", dump_bytes(bytes));
+    port.file.write_all(bytes)?;
+    Ok(bytes.len())
 }
 
 pub fn recv(port: &mut IbMadPort, umad: &mut ib_user_mad, timeout_ms: u32) -> io::Result<usize> {
@@ -341,8 +335,7 @@ pub fn recv(port: &mut IbMadPort, umad: &mut ib_user_mad, timeout_ms: u32) -> io
         return Err(io::Error::new(io::ErrorKind::TimedOut, "read timeout"));
     }
 
-    let mut buf = vec![0u8; std::mem::size_of::<ib_user_mad>()];
-
+    let mut buf = [0u8; UMAD_SIZE];
     let rc = port.file.read(&mut buf)?;
 
     log::debug!(
@@ -351,13 +344,12 @@ pub fn recv(port: &mut IbMadPort, umad: &mut ib_user_mad, timeout_ms: u32) -> io
         dump_bytes(&buf)
     );
 
-    if rc != buf.len() {
+    if rc != UMAD_SIZE {
         return Err(io::Error::new(
             io::ErrorKind::TimedOut,
             format!(
                 "short read timeout, bytes read: {}, expected: {}",
-                rc,
-                buf.len()
+                rc, UMAD_SIZE
             ),
         ));
     }
@@ -386,14 +378,14 @@ pub fn send_wfile(port: &mut std::fs::File, umad: &ib_user_mad) -> io::Result<us
             "length exceeds buffer",
         ));
     }
-    let bytes = umad.to_bytes();
-    log::debug!("send - MAD bytes:\n{}", dump_bytes(&bytes));
-    port.write(&bytes)
+    let bytes = umad_bytes(umad);
+    log::debug!("send - MAD bytes:\n{}", dump_bytes(bytes));
+    port.write_all(bytes)?;
+    Ok(bytes.len())
 }
 
 pub fn recv_wfile(port: &mut std::fs::File, umad: &mut ib_user_mad) -> io::Result<usize> {
-    let mut buf = vec![0u8; std::mem::size_of::<ib_user_mad>()];
-
+    let mut buf = [0u8; UMAD_SIZE];
     let rc = port.read(&mut buf)?;
 
     log::debug!(
@@ -401,7 +393,6 @@ pub fn recv_wfile(port: &mut std::fs::File, umad: &mut ib_user_mad) -> io::Resul
         buf.len(),
         dump_bytes(&buf)
     );
-
     if rc == 0 {
         // A read of 0 bytes is a valid EOF, handle as you see fit.
         return Err(io::Error::new(
@@ -409,11 +400,10 @@ pub fn recv_wfile(port: &mut std::fs::File, umad: &mut ib_user_mad) -> io::Resul
             "read 0 bytes, connection may be closed",
         ));
     }
-
-    if rc != buf.len() {
+    if rc != UMAD_SIZE {
         return Err(io::Error::new(
-            io::ErrorKind::InvalidData, // More appropriate than TimedOut
-            format!("short read, bytes read: {}, expected: {}", rc, buf.len()),
+            io::ErrorKind::InvalidData,
+            format!("short read, bytes read: {}, expected: {}", rc, UMAD_SIZE),
         ));
     }
     if let Some(val) = ib_user_mad::from_bytes(&buf) {

@@ -25,6 +25,7 @@ pub struct Node {
     pub description: String,
     pub node_info: mad::node_info,
     pub ports: Vec<Rc<RefCell<Port>>>,
+    pub lid: u16, // Cache LID for easier lookup
 }
 
 #[derive(Debug)]
@@ -69,6 +70,132 @@ pub fn connect_ports(port_a_rc: &Rc<RefCell<Port>>, port_b_rc: &Rc<RefCell<Port>
             .upgrade()
             .map_or("?".to_string(), |p| p.borrow().description.clone())
     );
+}
+
+pub fn build_standard_fabric(fabric: &mut Fabric) {
+    // build sixteen spine switches
+    let mut spines = Vec::new();
+    let mut lid = 2000; // Spines start at 2000
+
+    for spine_idx in 0..16 {
+        let spine = Node::new_switch(
+            &format!("spine-{}", spine_idx),
+            0x7ffc_0000_0000_1000 + spine_idx as u64,
+        );
+        let spine_rc = fabric.add_switch(spine);
+
+        {
+            let mut spine_ref = spine_rc.borrow_mut();
+            spine_ref.lid = lid;
+            for i in 0..=65 {
+                let port = Port::new_port(i, lid, spine_rc.clone());
+                spine_ref.ports.push(Rc::new(RefCell::new(port)));
+            }
+        }
+        spines.push(spine_rc);
+        lid += 1;
+    }
+
+    // create thirty two leaf switches each hosting thirty two HCAs
+    let mut hca_count = 0;
+    let mut lid = 3000; // Leaf switches start at 3000
+
+    for leaf_idx in 0..32 {
+        let leaf = Node::new_switch(
+            &format!("leaf-{}", leaf_idx),
+            0x7ffc_0000_0000_2000 + leaf_idx as u64,
+        );
+
+        let leaf_rc = fabric.add_switch(leaf);
+
+        {
+            let mut leaf_ref = leaf_rc.borrow_mut();
+            leaf_ref.lid = lid;
+            for i in 0..=65 {
+                let port = Port::new_port(i as u8, lid, leaf_rc.clone());
+                log::trace!(
+                    "Adding leaf port, logical_state: {},  physical_state: {}",
+                    port.port_info.port_state(),
+                    port.port_info.port_physical_state(),
+                );
+                leaf_ref.ports.push(Rc::new(RefCell::new(port)));
+            }
+        }
+
+        lid += 1;
+
+        // connect leaf to all spines for a non blocking fabric
+        // 4*16 = 64 spine ports
+        // Simplified connection logic from tests
+        for i in 0..32 {
+            for (spine_idx, spine_rc) in spines.iter().enumerate() {
+                // Determine ports to connect
+                // This logic mirrors the test logic but ensures safe indexing
+                // Spine ports used: 1..33 (roughly)
+                // Leaf ports used: 33..65 (roughly)
+                
+                let spine_port_idx = leaf_idx + 1 + i;
+                if spine_port_idx >= 65 { continue; } // Safety check
+
+                let spine_port_rc = {
+                    let spine_ref = spine_rc.borrow();
+                    if spine_port_idx < spine_ref.ports.len() {
+                        spine_ref.ports[spine_port_idx].clone()
+                    } else {
+                        continue;
+                    }
+                };
+
+                // Leaf ports for uplinks usually start after HCA ports
+                // 32 HCAs on 1-32. Uplinks on 33+.
+                let leaf_port_idx = 33 + spine_idx + (i / 2); 
+                if leaf_port_idx >= 65 { continue; }
+
+                // Now we get an immutable borrow which is fine.
+                let leaf_port_rc = {
+                    let leaf_ref = leaf_rc.borrow();
+                    if leaf_port_idx < leaf_ref.ports.len() {
+                        leaf_ref.ports[leaf_port_idx].clone()
+                    } else {
+                        continue;
+                    }
+                };
+
+                connect_ports(&spine_port_rc, &leaf_port_rc);
+            }
+        }
+
+        // each leaf hosts thirty two HCAs on ports 1-32
+        for h in 0..32 {
+            hca_count += 1;
+            let hca = Node::new_hca(
+                &format!("host{:04}", hca_count),
+                0x7ffc_0000_0000_3000 + hca_count as u64,
+            );
+            let hca_rc = fabric.add_hca(hca);
+            
+            // Assign LID to HCA (simplification: sequential LIDs starting after switches)
+            let hca_lid = 4000 + hca_count as u16;
+            hca_rc.borrow_mut().lid = hca_lid;
+
+            let hca_port = Rc::new(RefCell::new(Port::new_port(
+                1,
+                hca_lid,
+                hca_rc.clone(),
+            )));
+            hca_rc.borrow_mut().ports.push(hca_port.clone());
+
+            // connect HCA to leaf
+            let leaf_hca_port_rc = leaf_rc.borrow().ports[h + 1].clone();
+
+            connect_ports(&leaf_hca_port_rc, &hca_port);
+
+            // first HCA becomes the first hop in dr_paths
+            if hca_count == 1 {
+                fabric.dr_paths.insert([0; 64], Rc::downgrade(&hca_port));
+            }
+        }
+    }
 }
 
 impl Fabric {
@@ -124,6 +251,37 @@ impl Fabric {
         resp_dr.attr_layout[..attr_data.len()].copy_from_slice(attr_data);
         let dr_bytes = resp_dr.to_bytes();
         resp_mad.data[..dr_bytes.len()].copy_from_slice(&dr_bytes);
+        let mad_bytes = resp_mad.to_bytes();
+        resp_umad.data[..mad_bytes.len()].copy_from_slice(&mad_bytes);
+
+        self.file.write_all(&resp_umad.to_bytes())
+    }
+
+    fn send_perf_response(
+        &mut self,
+        tid: u64,
+        umad: &ib_user_mad,
+        mad: &ib_mad,
+        perf_data: &mad::perf_mad,
+    ) -> Result<(), io::Error> {
+        if let Some(max_delay) = self.response_delay {
+            if max_delay > 0 {
+                let delay = rand::random_range(0..=max_delay);
+                log::trace!("[tid: {}] Delaying response by {}ms", tid, delay);
+                std::thread::sleep(time::Duration::from_micros(delay));
+            }
+        }
+
+        let mut resp_umad = umad.clone();
+        let mut resp_mad = *mad;
+        
+        // Mark as response (method | 0x80)
+        resp_mad.method = mad.method | 0x80;
+        resp_mad.status = 0; // Success
+
+        let perf_bytes = perf_data.to_bytes();
+        resp_mad.data[..perf_bytes.len()].copy_from_slice(&perf_bytes);
+        
         let mad_bytes = resp_mad.to_bytes();
         resp_umad.data[..mad_bytes.len()].copy_from_slice(&mad_bytes);
 
@@ -444,6 +602,63 @@ impl Fabric {
                     }
                 }
             }
+            0x4 => {
+                // Performance Management
+                log::trace!("[tid: {}] Processing Performance Management MAD.", tid);
+                let perf_req = mad::perf_mad::from_bytes(&mad.data).ok_or_else(|| {
+                     io::Error::new(io::ErrorKind::InvalidData, "Unable to parse Perf MAD")
+                })?;
+
+                let dest_lid = u16::from_be(umad.addr.lid);
+                let port_select = perf_req.port_select();
+
+                // Find node by LID
+                // Since we don't implement full forwarding, we cheat and search all nodes for the LID.
+                let mut target_node: Option<Rc<RefCell<Node>>> = None;
+                for node_rc in &self.nodes {
+                    if node_rc.borrow().lid == dest_lid {
+                         target_node = Some(node_rc.clone());
+                         break;
+                    }
+                    // Check ports too if needed, but simplified model assumes node LID match or port LID match
+                    // Port 0 usually has the Node LID.
+                }
+
+                if let Some(node) = target_node {
+                    match attr_id {
+                        0x001D => {
+                            // PortCountersExtended
+                            log::debug!("[tid: {}] Received PortCountersExtended for Node '{}' Port {}", tid, node.borrow().description, port_select);
+                            
+                            // Check if port exists
+                            let node_ref = node.borrow();
+                            let port_exists = node_ref.ports.iter().any(|p| p.borrow().num == port_select);
+                            
+                            if !port_exists {
+                                log::warn!("[tid: {}] Port {} not found on node '{}'", tid, port_select, node_ref.description);
+                                // Should return error MAD...
+                            } else {
+                                // Construct dummy response
+                                let mut resp = perf_req; // Copy request to preserve other fields
+                                
+                                // Set some dummy counters based on port number to verify unique data
+                                resp.set_port_xmit_data((1000 * port_select as u64) + 1);
+                                resp.set_port_rcv_data((2000 * port_select as u64) + 2);
+                                resp.set_port_xmit_pkts((10 * port_select as u64) + 3);
+                                resp.set_port_rcv_pkts((20 * port_select as u64) + 4);
+                                
+                                self.send_perf_response(tid, &umad, &mad, &resp)?;
+                            }
+                        }
+                        _ => {
+                             log::warn!("[tid: {}] Unhandled Perf AttrID: 0x{:04X}", tid, attr_id);
+                        }
+                    }
+                } else {
+                    log::warn!("[tid: {}] Target LID {} not found in fabric.", tid, dest_lid);
+                }
+
+            }
             0x1 => {
                 log::debug!(
                     "[tid: {}] Received LID-Routed MAD. (Currently unhandled)",
@@ -539,6 +754,7 @@ impl Node {
                 reserved: [0; 24],
             },
             ports: Vec::new(),
+            lid: 0, // Will be set by port later ideally, but simpler here
         };
 
         hca
@@ -563,6 +779,7 @@ impl Node {
                 reserved: [0; 24],
             },
             ports: Vec::new(),
+            lid: 0,
         };
 
         switch

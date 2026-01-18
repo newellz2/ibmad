@@ -1,11 +1,14 @@
 use std::{
-    collections::VecDeque,
+    collections::{VecDeque},
     io,
-    sync::{Arc, RwLock},
+    sync::{
+        Arc, RwLock,
+    },
 };
 
 use super::lib::{lock_err, Fabric, Port, START_PATH};
-use crate::enums;
+use crate::{enums};
+
 
 impl Fabric {
     /// Default InfiniBand DR SMP discovery.
@@ -116,15 +119,13 @@ impl Fabric {
                 remote_port_arc.write().map_err(lock_err)?.remote_port =
                     Some(Arc::downgrade(&local_port_arc));
             } else {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "Inconsistent fabric: remote node 0x{:X} ('{}') reported port {} which was not found",
-                        remote_node_guard.node_guid.to_be(),
-                        remote_node_guard.description.as_deref().unwrap_or("N/A"),
-                        remote_port_number
-                    ),
-                ));
+                log::warn!(
+                    "Inconsistent fabric: remote node 0x{:X} ('{}') reported port {} which was not found",
+                    remote_node_guard.node_guid.to_be(),
+                    remote_node_guard.description.as_deref().unwrap_or("N/A"),
+                    remote_port_number
+                );
+                continue;
             }
         }
 
@@ -219,4 +220,3 @@ impl Fabric {
         Ok(())
     }
 }
-

@@ -1,80 +1,88 @@
 #[cfg(test)]
+mod common;
+
+#[cfg(test)]
 mod ca_tests {
-    use std::path::Path;
+    use super::common;
 
     #[test]
     fn get_cas_names_success() {
-        let _ = env_logger::try_init();
+        common::setup();
 
-        if !Path::new(ibmad::ca::SYS_INFINIBAND).exists() {
+        if !common::can_run_ib_tests() {
             eprintln!("IB system path not found, skipping test");
             return;
         }
 
         match ibmad::ca::get_cas_names() {
             Ok(cas) => {
-                assert!(cas.len() > 0, "No CAs found.");
-                for _ca in cas.iter() {
-                    //
-                }
+                assert!(!cas.is_empty(), "No CAs found.");
             }
             Err(e) => {
-                assert!(false, "{}", format!("Error finding CAs: {:?}", e));
+                panic!("Error finding CAs: {:?}", e);
             }
         }
     }
 
     #[test]
     fn get_ca_success() {
-        let _ = env_logger::try_init();
+        common::setup();
 
-        if !Path::new(ibmad::ca::SYS_INFINIBAND).exists() {
+        if !common::can_run_ib_tests() {
             eprintln!("IB system path not found, skipping test");
             return;
         }
 
-        match ibmad::ca::get_ca("mlx5_0") {
+        // Try to find a valid CA name first instead of hardcoding mlx5_0
+        let ca_names = ibmad::ca::get_cas_names().expect("Failed to get CA names");
+        if ca_names.is_empty() {
+            eprintln!("No CAs found to test get_ca with");
+            return;
+        }
+        let target_ca = &ca_names[0];
+
+        match ibmad::ca::get_ca(target_ca) {
             Ok(ca) => {
                 assert!(!ca.name.is_empty(), "CA not found.");
                 log::debug!("get_ca_success - CA: {:?}", ca);
             }
             Err(e) => {
-                assert!(false, "{}", format!("Error finding CA: {:?}", e));
+                panic!("Error finding CA {}: {:?}", target_ca, e);
             }
         }
     }
 
     #[test]
     fn get_cas_success() {
-        let _ = env_logger::try_init();
+        common::setup();
 
-        if !Path::new(ibmad::ca::SYS_INFINIBAND).exists() {
+        if !common::can_run_ib_tests() {
             eprintln!("IB system path not found, skipping test");
             return;
         }
 
         match ibmad::ca::get_cas() {
             Ok(cas) => {
-                assert!(cas.len() > 0, "No CAs found.");
+                assert!(!cas.is_empty(), "No CAs found.");
             }
             Err(e) => {
-                assert!(false, "{}", format!("Error finding CAs: {:?}", e));
+                panic!("Error finding CAs: {:?}", e);
             }
         }
     }
 
     #[test]
     fn get_cas_counters_success() {
-        let _ = env_logger::try_init();
+        common::setup();
 
-        if !Path::new(ibmad::ca::SYS_INFINIBAND).exists() {
+        if !common::can_run_ib_tests() {
             eprintln!("IB system path not found, skipping test");
             return;
         }
 
         match ibmad::ca::get_cas() {
             Ok(cas) => {
-                assert!(cas.len() > 0, "No CAs found.");
+                assert!(!cas.is_empty(), "No CAs found.");
                 for ca in cas {
                     for port in ca.ports {
                         log::debug!("Port: {:?}", port.path);
@@ -84,14 +92,14 @@ mod ca_tests {
                                 log::debug!("Counters: {:?}", ctrs)
                             }
                             Err(e) => {
-                                assert!(false, "{}", format!("Error finding counters: {:?}", e));
+                                panic!("Error finding counters: {:?}", e);
                             }
                         }
                     }
                 }
             }
             Err(e) => {
-                assert!(false, "{}", format!("Error finding CAs: {:?}", e));
+                panic!("Error finding CAs: {:?}", e);
             }
         }
     }

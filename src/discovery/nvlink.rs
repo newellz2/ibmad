@@ -7,6 +7,12 @@ use std::{
 use super::lib::{lock_err, Fabric, Node, Port, START_PATH};
 use crate::enums;
 
+const NVLINK_RING_PORTS: [u8; 2] = [73, 74];
+
+fn is_nvlink_ring_port(port_number: u8) -> bool {
+    NVLINK_RING_PORTS.contains(&port_number)
+}
+
 impl Fabric {
     /// NVLink fabrics use a spine/leaf style topology where only specific ports (73/74)
     /// are used to traverse between switches. Other active ports are probed for endpoints
@@ -114,7 +120,7 @@ impl Fabric {
                             let node = new_node_arc.read().map_err(lock_err)?;
                             for port_arc in node.ports.iter() {
                                 let port = port_arc.read().map_err(lock_err)?;
-                                if (port.number == 73 || port.number == 74)
+                                if is_nvlink_ring_port(port.number)
                                     && (port.link_state == enums::IbPortLinkLayerState::Active
                                         || port.link_state == enums::IbPortLinkLayerState::Init)
                                 {
@@ -240,7 +246,7 @@ impl Fabric {
                         let neighbor_node = neighbor_node_arc.read().map_err(lock_err)?;
                         for neighbor_port_arc in neighbor_node.ports.iter() {
                             let neighbor_port = neighbor_port_arc.read().map_err(lock_err)?;
-                            if (neighbor_port.number == 73 || neighbor_port.number == 74)
+                            if is_nvlink_ring_port(neighbor_port.number)
                                 && (neighbor_port.link_state == enums::IbPortLinkLayerState::Active
                                     || neighbor_port.link_state == enums::IbPortLinkLayerState::Init)
                             {
@@ -275,8 +281,7 @@ impl Fabric {
                     let port = port_arc.read().ok()?;
                     // Skip port 0, inactive ports, and ports 73/74 (handled by main discovery)
                     if port.number == 0
-                        || port.number == 73
-                        || port.number == 74
+                        || is_nvlink_ring_port(port.number)
                         || port.remote_port.is_some()
                         || (port.link_state != enums::IbPortLinkLayerState::Active
                             && port.link_state != enums::IbPortLinkLayerState::Init)

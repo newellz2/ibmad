@@ -343,6 +343,7 @@ mod mad_tests {
             1,
             port_info.lid as u16,
             port_info.number as u8,
+            0,
         ) {
             Ok(resp) => resp,
             Err(e) => {
@@ -358,6 +359,124 @@ mod mad_tests {
         );
 
         log::debug!("PortCountersExtended:");
+        log::debug!("  PortSelect: {}", perf_response.port_select());
+        log::debug!("  CounterSelect: 0x{:04x}", perf_response.counter_select());
+        log::debug!("  PortXmitData: {}", perf_response.port_xmit_data());
+        log::debug!("  PortRcvData: {}", perf_response.port_rcv_data());
+        log::debug!("  PortXmitPkts: {}", perf_response.port_xmit_pkts());
+        log::debug!("  PortRcvPkts: {}", perf_response.port_rcv_pkts());
+        log::debug!(
+            "  PortUnicastXmitPkts: {}",
+            perf_response.port_unicast_xmit_pkts()
+        );
+        log::debug!(
+            "  PortUnicastRcvPkts: {}",
+            perf_response.port_unicast_rcv_pkts()
+        );
+        log::debug!(
+            "  PortMulticastXmitPkts: {}",
+            perf_response.port_multicast_xmit_pkts()
+        );
+        log::debug!(
+            "  PortMulticastRcvPkts: {}",
+            perf_response.port_multicast_rcv_pkts()
+        );
+        log::debug!(
+            "  CounterSelect2: 0x{:08x}",
+            perf_response.counter_select2()
+        );
+        log::debug!(
+            "  SymbolErrorCounter: {}",
+            perf_response.symbol_error_counter()
+        );
+        log::debug!(
+            "  LinkErrorRecoveryCounter: {}",
+            perf_response.link_error_recovery_counter()
+        );
+        log::debug!(
+            "  LinkDownedCounter: {}",
+            perf_response.link_downed_counter()
+        );
+        log::debug!("  PortRcvErrors: {}", perf_response.port_rcv_errors());
+        log::debug!(
+            "  PortRcvRemotePhysicalErrors: {}",
+            perf_response.port_rcv_remote_physical_errors()
+        );
+        log::debug!(
+            "  PortRcvSwitchRelayErrors: {}",
+            perf_response.port_rcv_switch_relay_errors()
+        );
+        log::debug!("  PortXmitDiscards: {}", perf_response.port_xmit_discards());
+        log::debug!(
+            "  PortXmitConstraintErrors: {}",
+            perf_response.port_xmit_constraint_errors()
+        );
+        log::debug!(
+            "  PortRcvConstraintErrors: {}",
+            perf_response.port_rcv_constraint_errors()
+        );
+        log::debug!(
+            "  LocalLinkIntegrityErrors: {}",
+            perf_response.local_link_integrity_errors()
+        );
+        log::debug!(
+            "  ExcessiveBufferOverrunErrors: {}",
+            perf_response.excessive_buffer_overrun_errors()
+        );
+        log::debug!("  VL15Dropped: {}", perf_response.vl15_dropped());
+        log::debug!("  PortXmitWait: {}", perf_response.port_xmit_wait());
+        log::debug!("  QP1Dropped: {}", perf_response.qp1_dropped());
+    }
+
+    #[test]
+    fn perfquery_lid_38_port_255() {
+        let _ = env_logger::try_init();
+        if !Path::new("/dev/infiniband/umad0").exists() {
+            eprintln!("UMAD device not found, skipping test");
+            return;
+        }
+
+        let ca = match ibmad::ca::get_ca("mlx5_0") {
+            Ok(ca) => ca,
+            Err(e) => {
+                eprintln!("Failed to enumerate CAs: {:?}", e);
+                return;
+            }
+        };
+
+        let mut port = match open_port(&ca) {
+            Ok(port) => port,
+            Err(e) => {
+                panic!("Error opening port: {:?}", e);
+            }
+        };
+
+        let agent_id = match register_agent(&mut port, IB_MGMT_CLASS_PERFORMANCE) {
+            Ok(id) => id,
+            Err(e) => {
+                panic!("Failed to register performance agent: {:?}", e);
+            }
+        };
+
+        let perf_response = match mad::query_port_counters_extended(
+            &mut port,
+            agent_id,
+            1000,
+            1,
+            38,
+            255,
+            0,
+        ) {
+            Ok(resp) => resp,
+            Err(e) => {
+                panic!(
+                    "Failed to query PortCountersExtended for LID 38 Port 255: {:?}",
+                    e
+                );
+            }
+        };
+
+        log::debug!("PortCountersExtended LID 38 Port 255:");
         log::debug!("  PortSelect: {}", perf_response.port_select());
         log::debug!("  CounterSelect: 0x{:04x}", perf_response.counter_select());
         log::debug!("  PortXmitData: {}", perf_response.port_xmit_data());

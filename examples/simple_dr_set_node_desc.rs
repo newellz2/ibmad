@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::{Instant};
 
 fn main() {
     let result = ibmad::ca::get_cas();
