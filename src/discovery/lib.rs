@@ -484,7 +484,7 @@ impl Fabric {
 
     pub(crate) fn attach_port_to_node(
         node_arc: &Arc<RwLock<Node>>,
-        port: Port,
+        mut port: Port,
         port_number: u8,
         is_placeholder: bool,
     ) -> Result<(), io::Error> {
@@ -499,6 +499,16 @@ impl Fabric {
                     format!("Could not access node rwlock: {:?}", e),
                 )
             })?;
+
+            // Propagate switch base LID (smalid) to external ports, mirroring
+            // ibnetdisc's recv_port_info: `port->base_lid = node->smalid`
+            if matches!(guard.node_type, enums::IbNodeType::Switch)
+                && port_number != 0
+                && guard.lid != 0
+            {
+                port.lid = guard.lid;
+            }
+
             guard.description.clone()
         };
 
@@ -568,9 +578,34 @@ impl Fabric {
             matches!(node.node_type, enums::IbNodeType::Switch)
         };
 
-        let ports_to_query: Vec<u8> = (1..=num_ports).collect();
+        // For switches, query port 0 first to establish the base LID (smalid)
+        // before processing external ports. This mirrors ibnetdisc's
+        // recv_port0_info callback which processes port 0 then triggers
+        // queries for ports 1..N, ensuring smalid is available for
+        // propagation to external ports via attach_port_to_node.
+        if is_switch {
+            match self.fetch_port_info(path, 0, hop_cnt) {
+                Ok(port) => {
+                    Fabric::attach_port_to_node(node_arc, port, 0, false)?;
+                }
+                Err(e) if e.kind() == io::ErrorKind::TimedOut => {
+                    log::warn!(
+                        "Timeout getting PortInfo for switch port 0 on path [{}]; switch LID will be unavailable",
+                        Fabric::format_path(&path),
+                    );
+                    self.mad_timeouts += 1;
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Error getting PortInfo for switch port 0 on path [{}]: {}",
+                        Fabric::format_path(&path),
+                        e
+                    );
+                }
+            }
+        }
 
-        for p in ports_to_query {
+        for p in 1..=num_ports {
             log::trace!(
                 "Fetching PortInfo for port {} on path [{}], hop_cnt: {}",
                 p,
@@ -623,43 +658,6 @@ impl Fabric {
             Fabric::attach_port_to_node(node_arc, port, p, is_placeholder)?;
         }
 
-        if is_switch {
-            let needs_port_zero = {
-                let guard = node_arc.read().map_err(|e| {
-                    io::Error::new(
-                        io::ErrorKind::Deadlock,
-                        format!("Could not access node rwlock: {:?}", e),
-                    )
-                })?;
-                guard.lid == 0
-                    && !guard
-                        .ports
-                        .iter()
-                        .any(|p| p.read().map(|pr| pr.number == 0).unwrap_or(false))
-            };
-
-            if needs_port_zero {
-                match self.fetch_port_info(path, 0, hop_cnt) {
-                    Ok(port) => {
-                        Fabric::attach_port_to_node(node_arc, port, 0, false)?;
-                    }
-                    Err(e) if e.kind() == io::ErrorKind::TimedOut => {
-                        log::debug!(
-                            "Timeout getting PortInfo for switch port 0 on path [{}]",
-                            Fabric::format_path(&path),
-                        );
-                        self.mad_timeouts += 1;
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "Error getting PortInfo for switch port 0 on path [{}]: {}",
-                            Fabric::format_path(&path),
-                            e
-                        );
-                    }
-                }
-            }
-        }
         Ok(())
     }
 

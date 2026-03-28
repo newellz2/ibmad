@@ -294,7 +294,7 @@ mod mad_tests {
             return;
         }
 
-        let ca = match ibmad::ca::get_ca("mlx5_0") {
+        let ca = match ibmad::ca::get_ca("sx_ib_0") {
             Ok(ca) => ca,
             Err(e) => {
                 eprintln!("Failed to enumerate CAs: {:?}", e);
