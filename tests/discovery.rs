@@ -11,10 +11,10 @@ mod discovery_tests {
     use std::sync::mpsc::channel;
     use std::{fs, sync, thread};
 
+    use super::common;
     use ibmad::enums::IbPortLinkLayerState;
     use ibmad::mad::{self, IB_MGMT_CLASS_PERFORMANCE, IbMadPort, open_port, open_smp_port};
     use ibmad::sim::Port;
-    use super::common;
 
     #[test]
     fn test_seq_discovery_sim_success() {
@@ -54,6 +54,7 @@ mod discovery_tests {
             mad_timeouts: 0,
             mads_sent: 0,
             tid: 1,
+            max_hops: None,
         };
 
         barrier.wait();
@@ -105,6 +106,7 @@ mod discovery_tests {
             mad_timeouts: 0,
             mads_sent: 0,
             tid: 1,
+            max_hops: None,
         };
 
         barrier.wait();
@@ -296,10 +298,13 @@ mod discovery_tests {
             mad_timeouts: 0,
             mads_sent: 0,
             tid: 1,
+            max_hops: None,
         };
 
         barrier.wait();
-        fabric.seq_discover().expect("Dual-uplink discovery should succeed");
+        fabric
+            .seq_discover()
+            .expect("Dual-uplink discovery should succeed");
 
         assert_eq!(fabric.switches.len(), 6, "Expected 2 spines + 4 leaves");
         assert_eq!(fabric.hcas.len(), 16, "Expected 4 HCAs per leaf × 4 leaves");
@@ -400,11 +405,8 @@ mod discovery_tests {
                 {
                     let mut n = sw_rc.borrow_mut();
                     for p in 0..=(k as u8) {
-                        n.ports.push(Rc::new(RefCell::new(Port::new_port(
-                            p,
-                            lid,
-                            sw_rc.clone(),
-                        ))));
+                        n.ports
+                            .push(Rc::new(RefCell::new(Port::new_port(p, lid, sw_rc.clone()))));
                     }
                 }
 
@@ -416,8 +418,7 @@ mod discovery_tests {
                     let core_port = pod + 1;
 
                     let agg_port_rc = sw_rc.borrow().ports[agg_port].clone();
-                    let core_port_rc =
-                        cores[core_base + c_off].borrow().ports[core_port].clone();
+                    let core_port_rc = cores[core_base + c_off].borrow().ports[core_port].clone();
                     ibmad::sim::connect_ports(&agg_port_rc, &core_port_rc);
                 }
 
@@ -435,11 +436,8 @@ mod discovery_tests {
                 {
                     let mut n = sw_rc.borrow_mut();
                     for p in 0..=(k as u8) {
-                        n.ports.push(Rc::new(RefCell::new(Port::new_port(
-                            p,
-                            lid,
-                            sw_rc.clone(),
-                        ))));
+                        n.ports
+                            .push(Rc::new(RefCell::new(Port::new_port(p, lid, sw_rc.clone()))));
                     }
                 }
 
@@ -516,6 +514,7 @@ mod discovery_tests {
             mad_timeouts: 0,
             mads_sent: 0,
             tid: 1,
+            max_hops: None,
         };
 
         barrier.wait();
@@ -523,12 +522,12 @@ mod discovery_tests {
             .seq_discover()
             .expect("3-level fat tree discovery should succeed");
 
-        assert_eq!(fabric.switches.len(), 20, "Expected 4 core + 8 agg + 8 edge");
         assert_eq!(
-            fabric.hcas.len(),
-            16,
-            "Expected 2 HCAs per edge × 8 edges"
+            fabric.switches.len(),
+            20,
+            "Expected 4 core + 8 agg + 8 edge"
         );
+        assert_eq!(fabric.hcas.len(), 16, "Expected 2 HCAs per edge × 8 edges");
         assert_eq!(fabric.nodes.len(), 36, "Expected 20 switches + 16 HCAs");
 
         let mut core_count = 0;
@@ -597,10 +596,7 @@ mod discovery_tests {
             let hca_arc = hca_weak.upgrade().expect("HCA ref should be valid");
             let hca = hca_arc.read().unwrap();
             let desc = hca.description.as_deref().unwrap_or("");
-            let host_num: u16 = desc
-                .trim_start_matches("host-")
-                .parse()
-                .unwrap_or(0);
+            let host_num: u16 = desc.trim_start_matches("host-").parse().unwrap_or(0);
             // host-001..004 = pod 0, 005..008 = pod 1, 009..012 = pod 2, 013..016 = pod 3
             let pod = (host_num - 1) / 4;
             pods_with_hosts.insert(pod);
@@ -614,13 +610,178 @@ mod discovery_tests {
         let _ = tx.send(true);
     }
 
+    /// `max_hops = Some(1)` on the 3-level fat tree should stop at the
+    /// directly-attached edge switch (host-001's own switch): the local HCA
+    /// (hop 0) and that one edge switch (hop 1) are discovered, but nothing
+    /// beyond it -- not even host-002, which shares that same edge switch
+    /// but is one hop further away from host-001's perspective.
+    #[test]
+    fn test_max_hops_1_limits_to_directly_attached_switch() {
+        let _ = env_logger::try_init();
+
+        let (client, server) = UnixStream::pair().unwrap();
+        let client_file = unsafe { fs::File::from_raw_fd(client.into_raw_fd()) };
+        let server_file = unsafe { fs::File::from_raw_fd(server.into_raw_fd()) };
+
+        let (tx, rx) = channel::<bool>();
+        let barrier = sync::Arc::new(sync::Barrier::new(2));
+        let barrier_clone = barrier.clone();
+
+        thread::spawn(move || {
+            let mut fabric = ibmad::sim::Fabric::new(server_file);
+            fabric.response_delay = Some(100);
+            build_3level_fat_tree(&mut fabric);
+            barrier_clone.wait();
+            let _ = fabric.run(rx);
+        });
+
+        let port = IbMadPort { file: client_file };
+        let mut fabric = ibmad::discovery::Fabric {
+            port,
+            agent_id: 0,
+            node_map: HashMap::new(),
+            nodes: Vec::new(),
+            hcas: Vec::new(),
+            switches: Vec::new(),
+            dr_paths: HashMap::new(),
+            ni_timings: Vec::new(),
+            retries: 1,
+            timeout: 50,
+            mad_errors: 0,
+            mad_timeouts: 0,
+            mads_sent: 0,
+            tid: 1,
+            max_hops: Some(1),
+        };
+
+        barrier.wait();
+        fabric
+            .seq_discover()
+            .expect("max_hops=1 discovery should succeed");
+
+        assert_eq!(
+            fabric.switches.len(),
+            1,
+            "Expected only the directly-attached edge switch at hop 1"
+        );
+        assert_eq!(
+            fabric.hcas.len(),
+            1,
+            "Expected only the local originating HCA (host-001), not its edge-mate host-002"
+        );
+        assert_eq!(fabric.nodes.len(), 2);
+
+        let edge = fabric.switches[0].upgrade().unwrap();
+        let edge = edge.read().unwrap();
+        assert_eq!(edge.description.as_deref(), Some("edge-pod0-0"));
+
+        let hca = fabric.hcas[0].upgrade().unwrap();
+        let hca = hca.read().unwrap();
+        assert_eq!(hca.description.as_deref(), Some("host-001"));
+
+        let _ = tx.send(true);
+    }
+
+    /// `max_hops = Some(2)` should additionally pick up whatever's on the
+    /// directly-attached edge switch's other ports: its 2 aggregation
+    /// uplinks and its other directly-attached HCA (host-002), but not
+    /// anything past those aggs (the core switches, at hop 3).
+    #[test]
+    fn test_max_hops_2_includes_second_hop_neighbors() {
+        let _ = env_logger::try_init();
+
+        let (client, server) = UnixStream::pair().unwrap();
+        let client_file = unsafe { fs::File::from_raw_fd(client.into_raw_fd()) };
+        let server_file = unsafe { fs::File::from_raw_fd(server.into_raw_fd()) };
+
+        let (tx, rx) = channel::<bool>();
+        let barrier = sync::Arc::new(sync::Barrier::new(2));
+        let barrier_clone = barrier.clone();
+
+        thread::spawn(move || {
+            let mut fabric = ibmad::sim::Fabric::new(server_file);
+            fabric.response_delay = Some(100);
+            build_3level_fat_tree(&mut fabric);
+            barrier_clone.wait();
+            let _ = fabric.run(rx);
+        });
+
+        let port = IbMadPort { file: client_file };
+        let mut fabric = ibmad::discovery::Fabric {
+            port,
+            agent_id: 0,
+            node_map: HashMap::new(),
+            nodes: Vec::new(),
+            hcas: Vec::new(),
+            switches: Vec::new(),
+            dr_paths: HashMap::new(),
+            ni_timings: Vec::new(),
+            retries: 1,
+            timeout: 50,
+            mad_errors: 0,
+            mad_timeouts: 0,
+            mads_sent: 0,
+            tid: 1,
+            max_hops: Some(2),
+        };
+
+        barrier.wait();
+        fabric
+            .seq_discover()
+            .expect("max_hops=2 discovery should succeed");
+
+        let switch_descs: HashSet<String> = fabric
+            .switches
+            .iter()
+            .map(|w| {
+                w.upgrade()
+                    .unwrap()
+                    .read()
+                    .unwrap()
+                    .description
+                    .clone()
+                    .unwrap_or_default()
+            })
+            .collect();
+        assert_eq!(
+            switch_descs,
+            HashSet::from([
+                "edge-pod0-0".to_string(),
+                "agg-pod0-0".to_string(),
+                "agg-pod0-1".to_string(),
+            ]),
+            "Expected the edge switch (hop 1) plus its 2 agg uplinks (hop 2), no core (hop 3)"
+        );
+
+        let hca_descs: HashSet<String> = fabric
+            .hcas
+            .iter()
+            .map(|w| {
+                w.upgrade()
+                    .unwrap()
+                    .read()
+                    .unwrap()
+                    .description
+                    .clone()
+                    .unwrap_or_default()
+            })
+            .collect();
+        assert_eq!(
+            hca_descs,
+            HashSet::from(["host-001".to_string(), "host-002".to_string()]),
+            "Expected both HCAs on the directly-attached edge switch"
+        );
+
+        let _ = tx.send(true);
+    }
+
     #[test]
     fn test_nodes_enumeration_real_hca() {
         common::setup();
 
         // If no real hardware, skip
         if !common::can_run_ib_tests() {
-             return;
+            return;
         }
 
         let ca = match ibmad::ca::get_ca("sx_ib_0") {
@@ -665,6 +826,7 @@ mod discovery_tests {
             mad_timeouts: 0,
             mads_sent: 0,
             tid: 1,
+            max_hops: None,
         };
 
         match fabric.seq_discover() {
@@ -696,7 +858,7 @@ mod discovery_tests {
     #[test]
     fn test_discovery_perf_counters_real_hca() {
         common::setup();
-        
+
         if !common::can_run_umad_tests() {
             eprintln!("UMAD device not found, skipping test");
             return;
@@ -744,6 +906,7 @@ mod discovery_tests {
             mad_timeouts: 0,
             mads_sent: 0,
             tid: 1,
+            max_hops: None,
         };
 
         if let Err(e) = fabric.seq_discover() {
@@ -825,7 +988,10 @@ mod discovery_tests {
                     // Changed from assert! failure to warning to avoid CI failure on flaky HW or short reads
                     log::warn!(
                         "Failed to query PortCountersExtended for {} (LID {} Port {}): {:?}",
-                        description, lid, port_number, e
+                        description,
+                        lid,
+                        port_number,
+                        e
                     );
                     None
                 }
@@ -871,7 +1037,10 @@ mod discovery_tests {
         };
 
         if let Err(e) = mad::register_agent(&mut port, 0x81) {
-            eprintln!("Skipping mlx5_0 discovery test, register_agent failed: {:?}", e);
+            eprintln!(
+                "Skipping mlx5_0 discovery test, register_agent failed: {:?}",
+                e
+            );
             return;
         }
 
@@ -890,6 +1059,7 @@ mod discovery_tests {
             mad_timeouts: 0,
             mads_sent: 0,
             tid: 1,
+            max_hops: None,
         };
 
         match fabric.seq_discover() {
@@ -904,7 +1074,10 @@ mod discovery_tests {
 
         for node_arc in &fabric.nodes {
             let node = node_arc.read().unwrap();
-            let desc = node.description.clone().unwrap_or_else(|| "N/A".to_string());
+            let desc = node
+                .description
+                .clone()
+                .unwrap_or_else(|| "N/A".to_string());
             let guid = node.node_guid;
             match node.node_type {
                 ibmad::enums::IbNodeType::Switch => {
@@ -923,7 +1096,10 @@ mod discovery_tests {
         println!("Total nodes: {}", fabric.nodes.len());
         println!("Switches: {}", switch_guids.len());
         println!("HCAs: {}", hca_guids.len());
-        println!("MADs sent: {}, Timeouts: {}, Errors: {}", fabric.mads_sent, fabric.mad_timeouts, fabric.mad_errors);
+        println!(
+            "MADs sent: {}, Timeouts: {}, Errors: {}",
+            fabric.mads_sent, fabric.mad_timeouts, fabric.mad_errors
+        );
 
         println!("\n=== SWITCHES ===");
         for (guid, desc) in &switch_guids {
@@ -962,6 +1138,7 @@ mod discovery_tests {
                             mad_timeouts: 0,
                             mads_sent: 0,
                             tid: 1,
+                            max_hops: None,
                         };
 
                         let r = fabric.seq_discover();
@@ -1021,6 +1198,7 @@ mod discovery_tests {
                             mad_timeouts: 0,
                             mads_sent: 0,
                             tid: 1,
+                            max_hops: None,
                         };
 
                         let r = fabric.seq_discover_nvlink();
@@ -1128,12 +1306,15 @@ mod discovery_tests {
             mad_timeouts: 0,
             mads_sent: 0,
             tid: 1,
+            max_hops: None,
         };
 
         barrier.wait();
 
         // Run discovery
-        fabric.seq_discover().expect("Discovery should not fail hard");
+        fabric
+            .seq_discover()
+            .expect("Discovery should not fail hard");
 
         let _ = tx.send(true);
 
@@ -1141,10 +1322,266 @@ mod discovery_tests {
         // Should find switch-1 and switch-2
         assert_eq!(fabric.nodes.len(), 2, "Should discover 2 nodes");
 
-        let s1 = fabric.nodes.iter().find(|n| n.read().unwrap().node_guid == 0x1001);
+        let s1 = fabric
+            .nodes
+            .iter()
+            .find(|n| n.read().unwrap().node_guid == 0x1001);
         assert!(s1.is_some(), "Should find switch-1");
 
-        let s2 = fabric.nodes.iter().find(|n| n.read().unwrap().node_guid == 0x1002);
+        let s2 = fabric
+            .nodes
+            .iter()
+            .find(|n| n.read().unwrap().node_guid == 0x1002);
         assert!(s2.is_some(), "Should find switch-2");
+    }
+
+    /// Regression fabric for the "discovery launched directly from a
+    /// switch's own management port" case, where the switch's front-panel
+    /// ports face HCAs/CAs directly rather than other switches. Mirrors
+    /// `build_switch_root_fabric` but connects switch-1 port 1 straight to
+    /// an HCA instead of to switch-2.
+    fn build_switch_root_with_hca_fabric(
+        fabric: &mut ibmad::sim::Fabric,
+    ) -> (Rc<RefCell<ibmad::sim::Node>>, Rc<RefCell<ibmad::sim::Node>>) {
+        let switch1 = ibmad::sim::Node::new_switch("switch-1", 0x1001);
+        let switch1_rc = fabric.add_switch(switch1);
+        {
+            let mut s1 = switch1_rc.borrow_mut();
+            for i in 0..=5 {
+                let port = Port::new_port(i, 100, switch1_rc.clone());
+                s1.ports.push(Rc::new(RefCell::new(port)));
+            }
+        }
+
+        let hca = ibmad::sim::Node::new_hca("host-001", 0x3001);
+        let hca_rc = fabric.add_hca(hca);
+        let hca_port = Rc::new(RefCell::new(Port::new_port(1, 300, hca_rc.clone())));
+        hca_rc.borrow_mut().ports.push(hca_port.clone());
+
+        // Connect switch1 port 1 directly to the HCA's port 1.
+        let s1_p1 = switch1_rc.borrow().ports[1].clone();
+        ibmad::sim::connect_ports(&s1_p1, &hca_port);
+
+        // Set switch1 port 0 as the entry point (simulating running on switch1).
+        let s1_p0 = switch1_rc.borrow().ports[0].clone();
+        fabric.dr_paths.insert([0; 64], Rc::downgrade(&s1_p0));
+
+        (switch1_rc, hca_rc)
+    }
+
+    #[test]
+    fn test_switch_root_links_directly_attached_hca_partner() {
+        common::setup();
+
+        let (client, server) = UnixStream::pair().unwrap();
+        let client_file = unsafe { fs::File::from_raw_fd(client.into_raw_fd()) };
+        let server_file = unsafe { fs::File::from_raw_fd(server.into_raw_fd()) };
+
+        let (tx, rx) = channel::<bool>();
+        let barrier = sync::Arc::new(sync::Barrier::new(2));
+        let barrier_clone = barrier.clone();
+
+        thread::spawn(move || {
+            let mut fabric = ibmad::sim::Fabric::new(server_file);
+            build_switch_root_with_hca_fabric(&mut fabric);
+            barrier_clone.wait();
+            let _ = fabric.run(rx);
+        });
+
+        let port = IbMadPort { file: client_file };
+
+        let mut fabric = ibmad::discovery::Fabric {
+            port,
+            agent_id: 0,
+            node_map: HashMap::new(),
+            nodes: Vec::new(),
+            hcas: Vec::new(),
+            switches: Vec::new(),
+            dr_paths: HashMap::new(),
+            ni_timings: Vec::new(),
+            retries: 1,
+            timeout: 50,
+            mad_errors: 0,
+            mad_timeouts: 0,
+            mads_sent: 0,
+            tid: 1,
+            max_hops: None,
+        };
+
+        barrier.wait();
+
+        fabric
+            .seq_discover()
+            .expect("Discovery should not fail hard");
+
+        let _ = tx.send(true);
+
+        assert_eq!(fabric.nodes.len(), 2, "Should discover switch-1 and host-001");
+
+        let switch1 = fabric
+            .nodes
+            .iter()
+            .find(|n| n.read().unwrap().node_guid == 0x1001)
+            .expect("Should find switch-1")
+            .clone();
+        let hca = fabric
+            .nodes
+            .iter()
+            .find(|n| n.read().unwrap().node_guid == 0x3001)
+            .expect("Should find host-001")
+            .clone();
+
+        let switch1_guard = switch1.read().unwrap();
+        let switch1_port1 = switch1_guard
+            .ports
+            .iter()
+            .find(|p| p.read().unwrap().number == 1)
+            .expect("switch-1 should have port 1");
+        let switch1_port1_remote = switch1_port1
+            .read()
+            .unwrap()
+            .remote_port
+            .as_ref()
+            .and_then(|w| w.upgrade())
+            .expect(
+                "switch-1 port 1 should have its `remote_port` linked to the directly \
+                 attached HCA -- this is the bug where `first_hop_discovery_ib` never \
+                 linked a switch-root's own ports to non-switch (CA/HCA) neighbors",
+            );
+        assert_eq!(
+            switch1_port1_remote.read().unwrap().number,
+            1,
+            "switch-1 port 1's remote_port should be the HCA's port 1"
+        );
+
+        let hca_guard = hca.read().unwrap();
+        let hca_port1 = hca_guard
+            .ports
+            .iter()
+            .find(|p| p.read().unwrap().number == 1)
+            .expect("host-001 should have port 1");
+        let hca_port1_remote = hca_port1
+            .read()
+            .unwrap()
+            .remote_port
+            .as_ref()
+            .and_then(|w| w.upgrade())
+            .expect("host-001 port 1 should have its remote_port linked back to switch-1");
+        assert_eq!(
+            hca_port1_remote.read().unwrap().number,
+            1,
+            "host-001 port 1's remote_port should be switch-1's port 1"
+        );
+    }
+
+    fn add_nvlink_switch(
+        fabric: &mut ibmad::sim::Fabric,
+        name: &str,
+        guid: u64,
+        lid: u16,
+        nports: u8,
+    ) -> Rc<RefCell<ibmad::sim::Node>> {
+        let mut sw = ibmad::sim::Node::new_switch(name, guid);
+        sw.node_info.nports = nports;
+        let sw_rc = fabric.add_switch(sw);
+        {
+            let mut node = sw_rc.borrow_mut();
+            for p in 0..=nports {
+                node.ports
+                    .push(Rc::new(RefCell::new(Port::new_port(p, lid, sw_rc.clone()))));
+            }
+        }
+        sw_rc
+    }
+
+    /// NVLink fabric rooted on a switch, traversed through the ring ports (73/74).
+    ///
+    /// ```text
+    ///   switch-2 ──73══73── switch-1 ──74══74── switch-3
+    ///                          │ 1
+    ///                        host-1
+    /// ```
+    fn build_nvlink_ring_fabric(fabric: &mut ibmad::sim::Fabric) {
+        const NPORTS: u8 = 74;
+
+        let s1 = add_nvlink_switch(fabric, "switch-1", 0x3001, 100, NPORTS);
+        let s2 = add_nvlink_switch(fabric, "switch-2", 0x3002, 200, NPORTS);
+        let s3 = add_nvlink_switch(fabric, "switch-3", 0x3003, 300, NPORTS);
+
+        // Ring links: switch-1 reaches its neighbours only via ports 73 and 74.
+        let s1_p73 = s1.borrow().ports[73].clone();
+        let s2_p73 = s2.borrow().ports[73].clone();
+        ibmad::sim::connect_ports(&s1_p73, &s2_p73);
+
+        let s1_p74 = s1.borrow().ports[74].clone();
+        let s3_p74 = s3.borrow().ports[74].clone();
+        ibmad::sim::connect_ports(&s1_p74, &s3_p74);
+
+        // An endpoint on a non-ring port, which discovery probes but does not traverse.
+        let hca = ibmad::sim::Node::new_hca("host-1", 0x4001);
+        let hca_rc = fabric.add_hca(hca);
+        let hca_port = Rc::new(RefCell::new(Port::new_port(1, 1000, hca_rc.clone())));
+        hca_rc.borrow_mut().ports.push(hca_port.clone());
+        let s1_p1 = s1.borrow().ports[1].clone();
+        ibmad::sim::connect_ports(&s1_p1, &hca_port);
+
+        // Run discovery as if we were on switch-1 itself.
+        let s1_p0 = s1.borrow().ports[0].clone();
+        fabric.dr_paths.insert([0; 64], Rc::downgrade(&s1_p0));
+    }
+
+    /// Switch-rooted NVLink discovery: both ring neighbours plus the endpoint
+    /// hanging off a non-ring port. The other NVLink test needs a real
+    /// `sx_ib_0` device, so this is the only simulated coverage of the ring
+    /// traversal.
+    #[test]
+    fn test_nvlink_switch_root_discovery() {
+        common::setup();
+
+        let (client, server) = UnixStream::pair().unwrap();
+        let client_file = unsafe { fs::File::from_raw_fd(client.into_raw_fd()) };
+        let server_file = unsafe { fs::File::from_raw_fd(server.into_raw_fd()) };
+
+        let (tx, rx) = channel::<bool>();
+        let barrier = sync::Arc::new(sync::Barrier::new(2));
+        let barrier_clone = barrier.clone();
+
+        thread::spawn(move || {
+            let mut fabric = ibmad::sim::Fabric::new(server_file);
+            build_nvlink_ring_fabric(&mut fabric);
+            barrier_clone.wait();
+            let _ = fabric.run(rx);
+        });
+
+        let port = IbMadPort { file: client_file };
+        // The first-hop probe walks every port on the root switch and most are
+        // unconnected, so keep the per-probe cost low.
+        let mut fabric = ibmad::discovery::Fabric::new(port, 0, 50, 0);
+
+        barrier.wait();
+        fabric
+            .seq_discover_nvlink()
+            .expect("NVLink discovery should not fail hard");
+
+        let _ = tx.send(true);
+
+        let found: HashSet<String> = fabric
+            .nodes
+            .iter()
+            .filter_map(|n| n.read().ok()?.description.clone())
+            .collect();
+
+        assert!(
+            found.contains("switch-2"),
+            "ring port 73 neighbour should be reachable, found: {:?}",
+            found
+        );
+        assert!(
+            found.contains("switch-3"),
+            "ring port 74 neighbour should be reachable, found: {:?}",
+            found
+        );
+        assert_eq!(fabric.switches.len(), 3, "Expected switch-1, -2 and -3");
+        assert_eq!(fabric.hcas.len(), 1, "Expected the endpoint on port 1");
     }
 }

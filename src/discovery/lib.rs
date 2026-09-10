@@ -19,6 +19,10 @@ pub struct Port {
     pub link_state: enums::IbPortLinkLayerState,
     pub phys_state: enums::IbPortPhyState,
     pub lid: u16,
+    /// Raw `LinkWidthActive` from PortInfo (IBTA bitmask: `0x01`=1x,
+    /// `0x02`=4x, `0x04`=8x, `0x08`=12x, `0x10`=2x, `0x20`=16x). `0` for
+    /// placeholder ports whose PortInfo query timed out.
+    pub link_width_active: u8,
     pub remote_port: Option<Weak<RwLock<Port>>>,
     pub parent: Weak<RwLock<Node>>,
 }
@@ -53,6 +57,14 @@ pub struct Fabric {
     pub mad_timeouts: u64,
     pub mads_sent: u64,
     pub tid: u64,
+    /// Maximum number of hops from the local CA to traverse, `None` = no
+    /// limit (sweep the whole reachable fabric). Hop 1 is the switch (or
+    /// node) directly wired to the local port the sweep started from; hop 2
+    /// is whatever is attached to hop 1's other ports, and so on. A node at
+    /// exactly `max_hops` is still fully discovered (so its own ports are
+    /// still emitted as poll targets), but the traversal does not continue
+    /// past it to discover what's beyond. Set via [`Fabric::set_max_hops`].
+    pub max_hops: Option<u8>,
 }
 
 pub(crate) fn lock_err<T: std::fmt::Debug>(e: T) -> io::Error {
@@ -60,6 +72,38 @@ pub(crate) fn lock_err<T: std::fmt::Debug>(e: T) -> io::Error {
 }
 
 impl Fabric {
+    /// Build an empty fabric ready for a discovery sweep.
+    ///
+    /// `agent_id` is the UMAD agent returned by `mad::register_agent` for the DR
+    /// SMP class; pass 0 for sim/tests that have no real UMAD device.
+    pub fn new(port: IbMadPort, agent_id: u32, timeout: u32, retries: u32) -> Self {
+        Fabric {
+            port,
+            agent_id,
+            node_map: HashMap::new(),
+            nodes: Vec::new(),
+            switches: Vec::new(),
+            hcas: Vec::new(),
+            dr_paths: HashMap::new(),
+            ni_timings: Vec::new(),
+            retries,
+            timeout,
+            mad_errors: 0,
+            mad_timeouts: 0,
+            mads_sent: 0,
+            tid: 1,
+            max_hops: None,
+        }
+    }
+
+    /// Limit the discovery sweep to `max_hops` hops from the local CA (see
+    /// [`Fabric::max_hops`] for what "hop" means here). `None` (the default
+    /// from [`Fabric::new`]) sweeps the whole reachable fabric.
+    pub fn set_max_hops(&mut self, max_hops: Option<u8>) -> &mut Self {
+        self.max_hops = max_hops;
+        self
+    }
+
     pub(crate) fn format_path(path: &[u8; 64]) -> String {
         let mut hop_vec: Vec<String> = Vec::new();
 
@@ -477,6 +521,7 @@ impl Fabric {
             link_state,
             phys_state: phy_state,
             lid,
+            link_width_active: pi.link_width_active(),
             parent: Weak::new(),
             remote_port: None,
         })
@@ -628,6 +673,7 @@ impl Fabric {
                             link_state: enums::IbPortLinkLayerState::Down,
                             phys_state: enums::IbPortPhyState::Disabled,
                             lid: 0,
+                            link_width_active: 0,
                             parent: Weak::new(),
                             remote_port: None,
                         },

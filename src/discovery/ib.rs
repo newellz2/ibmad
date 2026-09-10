@@ -1,14 +1,11 @@
 use std::{
-    collections::{VecDeque},
+    collections::VecDeque,
     io,
-    sync::{
-        Arc, RwLock,
-    },
+    sync::{Arc, RwLock},
 };
 
-use super::lib::{lock_err, Fabric, Port, START_PATH};
-use crate::{enums};
-
+use super::lib::{Fabric, Port, START_PATH, lock_err};
+use crate::enums;
 
 impl Fabric {
     /// Default InfiniBand DR SMP discovery.
@@ -48,6 +45,18 @@ impl Fabric {
             }
 
             let hop_cnt = Fabric::get_hop_count(&path_to_local_node) + 1;
+            if let Some(max_hops) = self.max_hops {
+                if hop_cnt > max_hops {
+                    log::debug!(
+                        "Skipping port {} at hop {} on path [{}]: exceeds --discover-max-hops {}",
+                        local_port_number,
+                        hop_cnt,
+                        Fabric::format_path(&path_to_local_node),
+                        max_hops
+                    );
+                    continue;
+                }
+            }
             let mut path_to_remote_node = path_to_local_node;
             if (hop_cnt as usize) >= path_to_remote_node.len() {
                 continue;
@@ -167,30 +176,43 @@ impl Fabric {
         })?;
 
         let first_node = first_node_arc.read().map_err(lock_err)?;
-        let first_node_is_switch = first_node.node_type == enums::IbNodeType::Switch;
 
         for port_arc in first_node.ports.iter() {
-            let port = port_arc.read().map_err(lock_err)?;
-            if port.number == 0 {
-                continue;
-            }
-            if port.link_state != enums::IbPortLinkLayerState::Active
-                && port.link_state != enums::IbPortLinkLayerState::Init
-            {
-                continue;
-            }
-
-            let mut path: [u8; 64] = [0; 64];
-            let (path_index, neighbor_hop_cnt) = if first_node_is_switch {
-                (hop_cnt as usize, hop_cnt + 1)
-            } else {
-                (hop_cnt as usize + 1, hop_cnt + 1)
+            // Scope the read guard tightly: we need to `write()` this same
+            // port below to link it to its neighbor, and `RwLock` isn't
+            // reentrant, so the read guard must be dropped first.
+            let port_number = {
+                let port = port_arc.read().map_err(lock_err)?;
+                if port.number == 0 {
+                    continue;
+                }
+                if port.link_state != enums::IbPortLinkLayerState::Active
+                    && port.link_state != enums::IbPortLinkLayerState::Init
+                {
+                    continue;
+                }
+                port.number
             };
+
+            // DR hops are stored from index 1 up; index 0 is reserved for the
+            // originator, which is why `get_hop_count` and `format_path` both skip
+            // it. A first hop therefore lands at path[1] whether the local node is
+            // a switch or a CA. Writing it to path[0] leaves the path empty while
+            // hop_cnt claims one hop, and the kernel rejects that with EINVAL.
+            let mut path: [u8; 64] = [0; 64];
+            let path_index = hop_cnt as usize + 1;
+            let neighbor_hop_cnt = hop_cnt + 1;
+
+            if let Some(max_hops) = self.max_hops {
+                if neighbor_hop_cnt > max_hops {
+                    continue;
+                }
+            }
 
             if path_index >= path.len() {
                 continue;
             }
-            path[path_index] = port.number;
+            path[path_index] = port_number;
 
             let neighbor_node_arc = match self.discover_node(path, neighbor_hop_cnt) {
                 Ok(n) => n,
@@ -198,6 +220,36 @@ impl Fabric {
             };
 
             let neighbor_node = neighbor_node_arc.read().map_err(lock_err)?;
+
+            // Link this node's own port directly to its first-hop neighbor's
+            // port. Without this, `remote_port` for `first_node`'s own ports
+            // depends entirely on `seq_discover`'s main loop happening to
+            // process the *neighbor's* port and looking back -- which only
+            // happens when the neighbor is a switch (only switch ports get
+            // pushed onto the traversal stack below). If `first_node` is
+            // itself a switch whose ports face CAs/HCAs directly (e.g.
+            // discovery launched from a leaf switch's own management port,
+            // fanning out to GPU HCAs), that secondary path never runs and
+            // every one of `first_node`'s ports is permanently left without
+            // partner info.
+            let remote_port_number = neighbor_node.local_port;
+            if let Some(remote_port_arc) = neighbor_node.ports.iter().find(|p| {
+                p.read()
+                    .map_or(false, |p_guard| p_guard.number == remote_port_number)
+            }) {
+                port_arc.write().map_err(lock_err)?.remote_port =
+                    Some(Arc::downgrade(remote_port_arc));
+                remote_port_arc.write().map_err(lock_err)?.remote_port =
+                    Some(Arc::downgrade(port_arc));
+            } else {
+                log::warn!(
+                    "Inconsistent fabric: first-hop neighbor 0x{:X} ('{}') reported port {} which was not found",
+                    neighbor_node.node_guid.to_be(),
+                    neighbor_node.description.as_deref().unwrap_or("N/A"),
+                    remote_port_number
+                );
+            }
+
             if neighbor_node.node_type != enums::IbNodeType::Switch {
                 continue;
             }
