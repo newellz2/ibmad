@@ -1,4 +1,4 @@
-use std::time::{Instant};
+use std::time::Instant;
 
 fn main() {
     let result = ibmad::ca::get_cas();
@@ -12,7 +12,6 @@ fn main() {
         match ibmad::mad::open_smp_port(ib_ca) {
             Ok(mut port) => {
                 if let Ok(agent_id) = ibmad::mad::register_agent(&mut port, 0x81) {
-                    
                     let desc = b"Saturn";
                     let mut attr_layout = [0; 64];
                     attr_layout[..desc.len()].copy_from_slice(desc);
@@ -103,8 +102,8 @@ fn main() {
 
                     let _ = ibmad::mad::recv(&mut port, &mut umad, 1000);
                     let duration = start.elapsed().as_secs_f64();
-                    println!("Duration(s): {}",duration);
-                    
+                    println!("Duration(s): {}", duration);
+
                     println!("Node Description Set to 'Saturn'");
                 }
             }

@@ -458,23 +458,16 @@ mod mad_tests {
             }
         };
 
-        let perf_response = match mad::query_port_counters_extended(
-            &mut port,
-            agent_id,
-            1000,
-            1,
-            38,
-            255,
-            0,
-        ) {
-            Ok(resp) => resp,
-            Err(e) => {
-                panic!(
-                    "Failed to query PortCountersExtended for LID 38 Port 255: {:?}",
-                    e
-                );
-            }
-        };
+        let perf_response =
+            match mad::query_port_counters_extended(&mut port, agent_id, 1000, 1, 38, 255, 0) {
+                Ok(resp) => resp,
+                Err(e) => {
+                    panic!(
+                        "Failed to query PortCountersExtended for LID 38 Port 255: {:?}",
+                        e
+                    );
+                }
+            };
 
         log::debug!("PortCountersExtended LID 38 Port 255:");
         log::debug!("  PortSelect: {}", perf_response.port_select());

@@ -1,9 +1,9 @@
 use std::fs;
+use std::io;
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, AsRawFd};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::io;
 
 use crate::{ca::IbCa, ib_user_mad_reg_req2};
 use crate::{dump_bytes, ib_user_mad_register_agent2};
@@ -31,11 +31,8 @@ pub const IB_DEFAULT_QKEY: u32 = 0x80010000;
 const UMAD_SIZE: usize = std::mem::size_of::<ib_user_mad>();
 
 fn umad_bytes(umad: &ib_user_mad) -> &[u8] {
-    unsafe {
-        std::slice::from_raw_parts(umad as *const ib_user_mad as *const u8, UMAD_SIZE)
-    }
+    unsafe { std::slice::from_raw_parts(umad as *const ib_user_mad as *const u8, UMAD_SIZE) }
 }
-
 
 #[derive(Debug)]
 pub struct IbMadPort {
@@ -193,7 +190,9 @@ pub fn query_port_counters_extended(
 
     // Kernel handles retries/timeouts based on the ib_user_mad fields above.
     // Wait up to the worst-case kernel time for a single request.
-    let total_timeout_ms = timeout_ms.saturating_mul(retries.saturating_add(1)).saturating_add(50);
+    let total_timeout_ms = timeout_ms
+        .saturating_mul(retries.saturating_add(1))
+        .saturating_add(50);
 
     send(port, &request)?;
 
@@ -290,7 +289,10 @@ pub fn register_agent(port: &mut IbMadPort, mgmt_class: u8) -> Result<u32, io::E
             Ok(req.id)
         }
         Err(e) => {
-            log::debug!("register_agent - Failed to register agent (v2), errorno: {}", e);
+            log::debug!(
+                "register_agent - Failed to register agent (v2), errorno: {}",
+                e
+            );
             Err(std::io::Error::new(io::ErrorKind::Other, e))
         }
     }

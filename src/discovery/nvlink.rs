@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use super::lib::{lock_err, Fabric, Node, Port, START_PATH};
+use super::lib::{Fabric, Node, Port, START_PATH, lock_err};
 use crate::enums;
 
 const NVLINK_RING_PORTS: [u8; 2] = [73, 74];
@@ -40,10 +40,9 @@ impl Fabric {
         while let Some((local_port_arc, path_to_local_node)) = stack.pop_front() {
             let (parent_desc, local_port_number) = {
                 let local_port = local_port_arc.read().map_err(lock_err)?;
-                let parent_arc = local_port
-                    .parent
-                    .upgrade()
-                    .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Parent node not found"))?;
+                let parent_arc = local_port.parent.upgrade().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotFound, "Parent node not found")
+                })?;
                 let parent_node = parent_arc.read().map_err(lock_err)?;
                 (parent_node.description.clone(), local_port.number)
             };
@@ -76,7 +75,10 @@ impl Fabric {
             if (hop_cnt as usize) < path_to_remote_node.len() {
                 path_to_remote_node[hop_cnt as usize] = local_port_number;
             } else {
-                log::warn!("Path too long, cannot discover beyond port {}", local_port_number);
+                log::warn!(
+                    "Path too long, cannot discover beyond port {}",
+                    local_port_number
+                );
                 continue;
             }
 
@@ -237,9 +239,11 @@ impl Fabric {
                     if neighbor_node.node_type == enums::IbNodeType::Switch {
                         drop(neighbor_node);
 
-                        if let Err(e) =
-                            self.discover_connected_nodes_nvlink(&neighbor_node_arc, path, neighbor_hop_cnt)
-                        {
+                        if let Err(e) = self.discover_connected_nodes_nvlink(
+                            &neighbor_node_arc,
+                            path,
+                            neighbor_hop_cnt,
+                        ) {
                             log::warn!("Error discovering connected nodes: {}", e);
                         }
 
@@ -248,7 +252,8 @@ impl Fabric {
                             let neighbor_port = neighbor_port_arc.read().map_err(lock_err)?;
                             if is_nvlink_ring_port(neighbor_port.number)
                                 && (neighbor_port.link_state == enums::IbPortLinkLayerState::Active
-                                    || neighbor_port.link_state == enums::IbPortLinkLayerState::Init)
+                                    || neighbor_port.link_state
+                                        == enums::IbPortLinkLayerState::Init)
                             {
                                 stack.push_front((neighbor_port_arc.clone(), path));
                             }
@@ -326,10 +331,11 @@ impl Fabric {
             let remote_port_number = remote_node_info.local_port;
             let remote_node_guard = remote_node_arc.read().map_err(lock_err)?;
 
-            if let Some(remote_port_arc) = remote_node_guard.ports.iter().find(|p| {
-                p.read()
-                    .map_or(false, |pg| pg.number == remote_port_number)
-            }) {
+            if let Some(remote_port_arc) = remote_node_guard
+                .ports
+                .iter()
+                .find(|p| p.read().map_or(false, |pg| pg.number == remote_port_number))
+            {
                 local_port_arc.write().map_err(lock_err)?.remote_port =
                     Some(Arc::downgrade(remote_port_arc));
                 remote_port_arc.write().map_err(lock_err)?.remote_port =
@@ -340,4 +346,3 @@ impl Fabric {
         Ok(())
     }
 }
-
