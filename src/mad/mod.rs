@@ -1,9 +1,9 @@
 use std::fs;
+use std::io;
 use std::io::{Read, Write};
 use std::os::fd::{AsFd, AsRawFd};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::io;
 
 use crate::{ca::IbCa, ib_user_mad_reg_req2};
 use crate::{dump_bytes, ib_user_mad_register_agent2};
@@ -29,13 +29,19 @@ pub const IB_MGMT_CLASS_DIRECT_ROUTED_SMP: u8 = 0x81;
 pub const IB_DEFAULT_QKEY: u32 = 0x80010000;
 
 const UMAD_SIZE: usize = std::mem::size_of::<ib_user_mad>();
+/// Size of the `ib_user_mad` header that precedes the MAD itself.
+pub const UMAD_HDR_SIZE: usize = UMAD_SIZE - 256;
+/// Size of the common MAD header (through attr_mod). The kernel's send
+/// timeout notification carries only this much of the original MAD.
+pub const IB_MGMT_MAD_HDR: usize = 24;
 
-fn umad_bytes(umad: &ib_user_mad) -> &[u8] {
-    unsafe {
-        std::slice::from_raw_parts(umad as *const ib_user_mad as *const u8, UMAD_SIZE)
-    }
+fn blank_umad() -> ib_user_mad {
+    ib_user_mad::from_bytes(&[0u8; UMAD_SIZE]).expect("buffer is UMAD_SIZE")
 }
 
+fn umad_bytes(umad: &ib_user_mad) -> &[u8] {
+    unsafe { std::slice::from_raw_parts(umad as *const ib_user_mad as *const u8, UMAD_SIZE) }
+}
 
 #[derive(Debug)]
 pub struct IbMadPort {
@@ -125,6 +131,8 @@ fn next_tid() -> u64 {
     tid
 }
 
+/// Query PortCountersExtended (attr 0x1D) for `lid`/`port_select`, sending the
+/// PerfMgt MAD on service level `sl` (0-15).
 pub fn query_port_counters_extended(
     port: &mut IbMadPort,
     agent_id: u32,
@@ -133,7 +141,15 @@ pub fn query_port_counters_extended(
     lid: u16,
     port_select: u8,
     pkey_index: u16,
+    sl: u8,
 ) -> Result<perf_mad, io::Error> {
+    if sl > 15 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid SL {sl}: must be 0-15"),
+        ));
+    }
+
     let mut perf_payload = perf_mad {
         pm_key: 0,
         reserved: [0; 32],
@@ -173,7 +189,7 @@ pub fn query_port_counters_extended(
             qpn: (1u32).to_be(),
             qkey: IB_DEFAULT_QKEY.to_be(),
             lid: lid.to_be(),
-            sl: 0,
+            sl,
             path_bits: 0,
             grh_present: 0,
             gid_index: 0,
@@ -191,37 +207,43 @@ pub fn query_port_counters_extended(
     let mut request = request;
     request.data[..ib_mad_bytes.len()].copy_from_slice(&ib_mad_bytes);
 
-    // Kernel handles retries/timeouts based on the ib_user_mad fields above.
-    // Wait up to the worst-case kernel time for a single request.
-    let total_timeout_ms = timeout_ms.saturating_mul(retries.saturating_add(1)).saturating_add(50);
+    // The kernel handles retries/timeouts based on the ib_user_mad fields
+    // above and queues a send-timeout notification (status != 0, same TID)
+    // when they're exhausted. Our own deadline is only a backstop in case
+    // that notification never shows up, so give it an extra timeout of slack.
+    let total_timeout_ms = timeout_ms
+        .saturating_mul(retries.saturating_add(1))
+        .saturating_add(timeout_ms.max(100));
 
     send(port, &request)?;
 
-    let mut response = ib_user_mad {
-        agent_id,
-        status: 0,
-        timeout_ms: 0,
-        retries: 0,
-        length: 0,
-        addr: ib_mad_addr {
-            qpn: 0,
-            qkey: 0,
-            lid: 0,
-            sl: 0,
-            path_bits: 0,
-            grh_present: 0,
-            gid_index: 0,
-            hop_limit: 0,
-            traffic_class: 0,
-            gid: [0; 16],
-            flow_label: 0,
-            pkey_index: 0,
-            reserved: [0; 6],
-        },
-        data: [0; 256],
+    // Only accept the packet for *this* TID. Anything else on the fd is a
+    // leftover from an earlier query (a late response or timeout notice)
+    // and must not be attributed to this LID/port.
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(total_timeout_ms as u64);
+    let response = loop {
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("no PerfQuery response for LID {} port {}", lid, port_select),
+            ));
+        }
+        let remaining_ms = ((deadline - now).as_millis() as u32).max(1);
+        let mut response = blank_umad();
+        recv_packet(port, &mut response, remaining_ms)?;
+        if request.is_tid_equal(&response) {
+            break response;
+        }
+        log::debug!(
+            "Discarding stale PerfMgt packet (TID 0x{:X}) while waiting for LID {} port {} (TID 0x{:X})",
+            response.get_tid().unwrap_or(0),
+            lid,
+            port_select,
+            tid
+        );
     };
-
-    recv(port, &mut response, total_timeout_ms)?;
 
     let resp_status: u32 = response.status;
     if resp_status != 0 {
@@ -290,7 +312,10 @@ pub fn register_agent(port: &mut IbMadPort, mgmt_class: u8) -> Result<u32, io::E
             Ok(req.id)
         }
         Err(e) => {
-            log::debug!("register_agent - Failed to register agent (v2), errorno: {}", e);
+            log::debug!(
+                "register_agent - Failed to register agent (v2), errorno: {}",
+                e
+            );
             Err(std::io::Error::new(io::ErrorKind::Other, e))
         }
     }
@@ -315,7 +340,34 @@ pub fn send(port: &mut IbMadPort, umad: &ib_user_mad) -> io::Result<usize> {
     Ok(bytes.len())
 }
 
+/// Receive one full-size UMAD. A short packet (e.g. the kernel's send-timeout
+/// notification) is reported as `TimedOut`. Use [`recv_packet`] to inspect
+/// such packets instead.
 pub fn recv(port: &mut IbMadPort, umad: &mut ib_user_mad, timeout_ms: u32) -> io::Result<usize> {
+    let rc = recv_packet(port, umad, timeout_ms)?;
+    if rc != UMAD_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!(
+                "short read timeout, bytes read: {}, expected: {}",
+                rc, UMAD_SIZE
+            ),
+        ));
+    }
+    Ok(rc)
+}
+
+/// Receive one packet, accepting short ones. When the kernel gives up on a
+/// sent MAD it queues a notification carrying only the UMAD header plus the
+/// 24-byte MAD header, with `status` set (ETIMEDOUT). That's still enough to
+/// read the TID, so callers can match it to the request it belongs to rather
+/// than mistaking it for a timeout of whatever they're waiting on now. Bytes
+/// past the end of a short packet are zero.
+pub fn recv_packet(
+    port: &mut IbMadPort,
+    umad: &mut ib_user_mad,
+    timeout_ms: u32,
+) -> io::Result<usize> {
     let fd = port.file.as_fd();
 
     if fd.as_raw_fd() < 0 {
@@ -344,15 +396,17 @@ pub fn recv(port: &mut IbMadPort, umad: &mut ib_user_mad, timeout_ms: u32) -> io
         dump_bytes(&buf)
     );
 
-    if rc != UMAD_SIZE {
+    if rc < UMAD_HDR_SIZE + IB_MGMT_MAD_HDR {
         return Err(io::Error::new(
-            io::ErrorKind::TimedOut,
+            io::ErrorKind::InvalidData,
             format!(
-                "short read timeout, bytes read: {}, expected: {}",
-                rc, UMAD_SIZE
+                "runt UMAD, bytes read: {}, need at least: {}",
+                rc,
+                UMAD_HDR_SIZE + IB_MGMT_MAD_HDR
             ),
         ));
     }
+    // `buf` is zero-initialised, so a short packet's tail reads as zeros.
     if let Some(val) = ib_user_mad::from_bytes(&buf) {
         *umad = val;
     } else {

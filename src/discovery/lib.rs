@@ -19,6 +19,10 @@ pub struct Port {
     pub link_state: enums::IbPortLinkLayerState,
     pub phys_state: enums::IbPortPhyState,
     pub lid: u16,
+    /// Raw `LinkWidthActive` from PortInfo (IBTA bitmask: `0x01`=1x,
+    /// `0x02`=4x, `0x04`=8x, `0x08`=12x, `0x10`=2x, `0x20`=16x). `0` for
+    /// placeholder ports whose PortInfo query timed out.
+    pub link_width_active: u8,
     pub remote_port: Option<Weak<RwLock<Port>>>,
     pub parent: Weak<RwLock<Node>>,
 }
@@ -53,6 +57,14 @@ pub struct Fabric {
     pub mad_timeouts: u64,
     pub mads_sent: u64,
     pub tid: u64,
+    /// Maximum number of hops from the local CA to traverse, `None` = no
+    /// limit (sweep the whole reachable fabric). Hop 1 is the switch (or
+    /// node) directly wired to the local port the sweep started from; hop 2
+    /// is whatever is attached to hop 1's other ports, and so on. A node at
+    /// exactly `max_hops` is still fully discovered (so its own ports are
+    /// still emitted as poll targets), but the traversal does not continue
+    /// past it to discover what's beyond. Set via [`Fabric::set_max_hops`].
+    pub max_hops: Option<u8>,
 }
 
 pub(crate) fn lock_err<T: std::fmt::Debug>(e: T) -> io::Error {
@@ -60,6 +72,38 @@ pub(crate) fn lock_err<T: std::fmt::Debug>(e: T) -> io::Error {
 }
 
 impl Fabric {
+    /// Build an empty fabric ready for a discovery sweep.
+    ///
+    /// `agent_id` is the UMAD agent returned by `mad::register_agent` for the DR
+    /// SMP class; pass 0 for sim/tests that have no real UMAD device.
+    pub fn new(port: IbMadPort, agent_id: u32, timeout: u32, retries: u32) -> Self {
+        Fabric {
+            port,
+            agent_id,
+            node_map: HashMap::new(),
+            nodes: Vec::new(),
+            switches: Vec::new(),
+            hcas: Vec::new(),
+            dr_paths: HashMap::new(),
+            ni_timings: Vec::new(),
+            retries,
+            timeout,
+            mad_errors: 0,
+            mad_timeouts: 0,
+            mads_sent: 0,
+            tid: 1,
+            max_hops: None,
+        }
+    }
+
+    /// Limit the discovery sweep to `max_hops` hops from the local CA (see
+    /// [`Fabric::max_hops`] for what "hop" means here). `None` (the default
+    /// from [`Fabric::new`]) sweeps the whole reachable fabric.
+    pub fn set_max_hops(&mut self, max_hops: Option<u8>) -> &mut Self {
+        self.max_hops = max_hops;
+        self
+    }
+
     pub(crate) fn format_path(path: &[u8; 64]) -> String {
         let mut hop_vec: Vec<String> = Vec::new();
 
@@ -196,16 +240,32 @@ impl Fabric {
         current
     }
 
+    /// Send a DR SMP and wait for the response with the same TID, retrying
+    /// with exponential backoff.
+    ///
+    /// This loop is the *only* retry layer: each attempt is handed to the
+    /// kernel with `retries = 0` and `timeout_ms` = this attempt's timeout.
+    /// Previously the kernel also retried each attempt, which multiplied the
+    /// cost of every dead port and left stray send-timeout notifications in
+    /// the queue. Those notifications are short packets carrying the TID of
+    /// the attempt that timed out; one for our TID ends the attempt early,
+    /// and ones for other TIDs are discarded instead of aborting our wait.
     pub(crate) fn send_and_match_with_retries(
         &mut self,
         umad_to_send: ib_user_mad,
     ) -> Result<ib_user_mad, io::Error> {
+        /// Grace period past the kernel's timeout for its notice to arrive.
+        const KERNEL_NOTIFY_SLACK_MS: u32 = 50;
+
         let retries = self.retries;
-        let mut current_timeout = self.timeout;
+        let mut current_timeout = self.timeout.max(1);
         let backoff_factor = 2;
         let expected_tid = umad_to_send.get_tid()?;
+        let mut umad_to_send = umad_to_send;
+        umad_to_send.retries = 0;
 
         for attempt in 0..=retries {
+            umad_to_send.timeout_ms = current_timeout;
             log::trace!(
                 "-> Sending MAD with TID 0x{:X} (Attempt {}/{})",
                 expected_tid,
@@ -226,8 +286,10 @@ impl Fabric {
                 self.mads_sent += 1;
             }
 
-            let deadline =
-                time::Instant::now() + time::Duration::from_millis(current_timeout as u64);
+            let deadline = time::Instant::now()
+                + time::Duration::from_millis(
+                    current_timeout.saturating_add(KERNEL_NOTIFY_SLACK_MS) as u64,
+                );
 
             loop {
                 let now = time::Instant::now();
@@ -240,15 +302,12 @@ impl Fabric {
                     self.mad_timeouts += 1;
                     break;
                 }
-                let remaining_time = (deadline - now).as_millis() as u32;
+                let remaining_time = ((deadline - now).as_millis() as u32).max(1);
                 let mut recv_umad = Fabric::build_umad(self.agent_id, self.timeout, self.retries);
 
-                match mad::recv(&mut self.port, &mut recv_umad, remaining_time) {
+                match mad::recv_packet(&mut self.port, &mut recv_umad, remaining_time) {
                     Ok(_) => {
-                        if umad_to_send.is_tid_equal(&recv_umad) {
-                            log::trace!("<- Matched response for TID 0x{:X}", expected_tid);
-                            return Ok(recv_umad);
-                        } else {
+                        if !umad_to_send.is_tid_equal(&recv_umad) {
                             log::trace!(
                                 "Discarding mismatched TID. Expected 0x{:X}, got 0x{:X}",
                                 expected_tid,
@@ -256,8 +315,23 @@ impl Fabric {
                             );
                             continue;
                         }
+                        let kernel_status = recv_umad.status; // copy out of packed struct
+                        if kernel_status != 0 {
+                            // Kernel send-timeout notice for this attempt.
+                            log::debug!(
+                                "Attempt {} for TID 0x{:X} timed out (kernel status {})",
+                                attempt + 1,
+                                expected_tid,
+                                kernel_status
+                            );
+                            self.mad_timeouts += 1;
+                            break;
+                        }
+                        log::trace!("<- Matched response for TID 0x{:X}", expected_tid);
+                        return Ok(recv_umad);
                     }
                     Err(e) if e.kind() == io::ErrorKind::TimedOut => {
+                        self.mad_timeouts += 1;
                         break;
                     }
                     Err(e) => {
@@ -288,13 +362,38 @@ impl Fabric {
         Ok(umad)
     }
 
+    /// Reject SMP responses whose MAD status reports an error. Bit 15 of a DR
+    /// SMP's status is the direction (D) bit, set on every response, so only
+    /// the low 15 bits indicate a failure. Without this check an error
+    /// response's (mostly zero) attribute data gets parsed as if it were real.
+    pub(crate) fn check_smp_status(umad: &ib_user_mad, what: &str) -> Result<(), io::Error> {
+        let status = u16::from_be_bytes([umad.data[4], umad.data[5]]) & 0x7FFF;
+        if status != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("{} returned MAD status 0x{:04X}", what, status),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn discover_node(
         &mut self,
         path: [u8; 64],
         hop_cnt: u8,
     ) -> Result<Arc<RwLock<Node>>, io::Error> {
         let node_info = self.fetch_node_info(path, hop_cnt)?;
+        self.discover_node_from_info(path, hop_cnt, node_info)
+    }
 
+    /// Like [`Fabric::discover_node`], but reuses a NodeInfo the caller already
+    /// fetched for `path` instead of querying it again.
+    pub(crate) fn discover_node_from_info(
+        &mut self,
+        path: [u8; 64],
+        hop_cnt: u8,
+        node_info: node_info,
+    ) -> Result<Arc<RwLock<Node>>, io::Error> {
         let node_guid = node_info.node_guid;
         if let Some(existing) = self.node_map.get(&node_guid) {
             log::trace!(
@@ -322,8 +421,20 @@ impl Fabric {
             ports: Vec::with_capacity(node_info.nports as usize),
         };
 
-        let node_desc = self.fetch_node_desc(path, hop_cnt)?;
-        node.description = Some(node_desc);
+        // A missing description shouldn't cost us the node (and everything
+        // behind it); NodeInfo already proved it's there.
+        node.description = match self.fetch_node_desc(path, hop_cnt) {
+            Ok(desc) => Some(desc),
+            Err(e) => {
+                log::warn!(
+                    "Failed to fetch NodeDesc for 0x{:X} at path [{}]: {}",
+                    node_info.node_guid.to_be(),
+                    Fabric::format_path(&path),
+                    e
+                );
+                None
+            }
+        };
 
         log::debug!(
             "Discovered Node: '{}' (GUID: 0x{:X}, Type: {:?}, Ports: {})",
@@ -368,6 +479,7 @@ impl Fabric {
         );
 
         let recv_ni_umad = self.send_and_match_with_retries(umad_to_send)?;
+        Fabric::check_smp_status(&recv_ni_umad, "NodeInfo")?;
 
         self.ni_timings.push(time::Instant::now() - start_ts);
 
@@ -402,6 +514,7 @@ impl Fabric {
         );
 
         let recv_nd_umad = self.send_and_match_with_retries(umad_to_send)?;
+        Fabric::check_smp_status(&recv_nd_umad, "NodeDesc")?;
 
         let dr: &mad::dr_smp_mad = unsafe {
             &*(recv_nd_umad.data[mad::node::NODE_DESC_OFFSET..].as_ptr() as *const mad::dr_smp_mad)
@@ -445,6 +558,7 @@ impl Fabric {
         );
 
         let recv_pi_umad = self.send_and_match_with_retries(umad_to_send)?;
+        Fabric::check_smp_status(&recv_pi_umad, "PortInfo")?;
 
         let pi = port_info::from_bytes(&recv_pi_umad.data[64..]).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "could not parse portinfo data.")
@@ -464,12 +578,19 @@ impl Fabric {
                 format!("invalid port_state: {:?}", e),
             )
         })?;
-        let phy_state = enums::IbPortPhyState::try_from(pi.port_physical_state()).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid port_physical_state: {:?}", e),
-            )
-        })?;
+        // An unrecognised physical state (reserved/vendor value) is no reason
+        // to throw away an otherwise valid port; the link state is what
+        // traversal and polling depend on.
+        let raw_phy = pi.port_physical_state();
+        let phy_state = enums::IbPortPhyState::try_from(raw_phy).unwrap_or_else(|_| {
+            log::debug!(
+                "Port {} on path [{}] reports unknown physical state {}",
+                port_num,
+                Fabric::format_path(&path),
+                raw_phy
+            );
+            enums::IbPortPhyState::Unknown
+        });
         let lid = pi.lid();
 
         Ok(Port {
@@ -477,6 +598,7 @@ impl Fabric {
             link_state,
             phys_state: phy_state,
             lid,
+            link_width_active: pi.link_width_active(),
             parent: Weak::new(),
             remote_port: None,
         })
@@ -593,7 +715,6 @@ impl Fabric {
                         "Timeout getting PortInfo for switch port 0 on path [{}]; switch LID will be unavailable",
                         Fabric::format_path(&path),
                     );
-                    self.mad_timeouts += 1;
                 }
                 Err(e) => {
                     log::warn!(
@@ -613,45 +734,39 @@ impl Fabric {
                 hop_cnt
             );
 
+            // Any failure on one port becomes a Down placeholder rather than
+            // aborting the node: aborting used to drop the whole switch and,
+            // with it, everything discovery would have reached through it.
             let (port, is_placeholder) = match self.fetch_port_info(path, p, hop_cnt) {
                 Ok(port) => (port, false),
-                Err(e) if e.kind() == io::ErrorKind::TimedOut => {
-                    log::debug!(
-                        "Timeout getting PortInfo for port {} on path [{}], inserting placeholder",
-                        p,
-                        Fabric::format_path(&path)
-                    );
-                    self.mad_timeouts += 1;
+                Err(e) => {
+                    if e.kind() == io::ErrorKind::TimedOut {
+                        log::debug!(
+                            "Timeout getting PortInfo for port {} on path [{}], inserting placeholder",
+                            p,
+                            Fabric::format_path(&path)
+                        );
+                    } else {
+                        log::warn!(
+                            "Error getting PortInfo for port {} on path [{}]: {}. Inserting placeholder",
+                            p,
+                            Fabric::format_path(&path),
+                            e
+                        );
+                        self.mad_errors += 1;
+                    }
                     (
                         Port {
                             number: p,
                             link_state: enums::IbPortLinkLayerState::Down,
                             phys_state: enums::IbPortPhyState::Disabled,
                             lid: 0,
+                            link_width_active: 0,
                             parent: Weak::new(),
                             remote_port: None,
                         },
                         true,
                     )
-                }
-                Err(e) if e.kind() == io::ErrorKind::InvalidInput => {
-                    log::debug!(
-                        "Invalid PortInfo request for port {} on path [{}]: {}. Skipping.",
-                        p,
-                        Fabric::format_path(&path),
-                        e
-                    );
-                    self.mad_errors += 1;
-                    continue;
-                }
-                Err(e) => {
-                    log::error!(
-                        "Error getting PortInfo for port {} on path [{}]: {}",
-                        p,
-                        Fabric::format_path(&path),
-                        e
-                    );
-                    return Err(e);
                 }
             };
 

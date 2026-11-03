@@ -85,7 +85,7 @@ mod tests {
     #[test]
     fn test_set_get_bitfield_aligned() {
         let mut data = [0u8; 8];
-        
+
         // Test byte aligned write/read
         set_bitfield(&mut data, 0, 8, 0xAB);
         assert_eq!(data[0], 0xAB);
@@ -123,16 +123,16 @@ mod tests {
         set_bitfield(&mut data, 0, 4, 0xFF);
         assert_eq!(get_bitfield(&data, 0, 4), 0xF);
     }
-    
+
     #[test]
     fn test_preserves_surrounding_bits() {
         let mut data = [0xFFu8; 4];
-        
+
         // Set middle bits to 0
         set_bitfield(&mut data, 4, 4, 0x0);
         // data[0] should be 1111 0000 -> 0xF0
         assert_eq!(data[0], 0xF0);
-        
+
         // Check other bytes untouched
         assert_eq!(data[1], 0xFF);
     }
