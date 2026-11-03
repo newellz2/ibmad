@@ -81,7 +81,7 @@ impl Fabric {
             let remote_node_arc = if let Some(found_node) = self.node_map.get(&node_guid) {
                 found_node.clone()
             } else {
-                match self.discover_node(path_to_remote_node, hop_cnt) {
+                match self.discover_node_from_info(path_to_remote_node, hop_cnt, remote_node_info) {
                     Ok(new_node_arc) => {
                         // If it's a switch, add all eligible ports to the traversal stack.
                         let is_switch = {
@@ -214,10 +214,19 @@ impl Fabric {
             }
             path[path_index] = port_number;
 
-            let neighbor_node_arc = match self.discover_node(path, neighbor_hop_cnt) {
-                Ok(n) => n,
+            // Fetch NodeInfo on *this* path: its LocalPort is the neighbor's
+            // port facing us. The stored Node's `local_port` is only the port
+            // seen when that node was first discovered, which is wrong for
+            // every additional parallel link to the same neighbor.
+            let neighbor_info = match self.fetch_node_info(path, neighbor_hop_cnt) {
+                Ok(ni) => ni,
                 Err(_) => continue,
             };
+            let neighbor_node_arc =
+                match self.discover_node_from_info(path, neighbor_hop_cnt, neighbor_info) {
+                    Ok(n) => n,
+                    Err(_) => continue,
+                };
 
             let neighbor_node = neighbor_node_arc.read().map_err(lock_err)?;
 
@@ -232,7 +241,7 @@ impl Fabric {
             // fanning out to GPU HCAs), that secondary path never runs and
             // every one of `first_node`'s ports is permanently left without
             // partner info.
-            let remote_port_number = neighbor_node.local_port;
+            let remote_port_number = neighbor_info.local_port;
             if let Some(remote_port_arc) = neighbor_node.ports.iter().find(|p| {
                 p.read()
                     .map_or(false, |p_guard| p_guard.number == remote_port_number)

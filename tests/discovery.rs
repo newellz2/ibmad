@@ -982,6 +982,7 @@ mod discovery_tests {
                 lid,
                 port_number,
                 0,
+                0,
             ) {
                 Ok(resp) => Some(resp),
                 Err(e) => {
@@ -1472,6 +1473,114 @@ mod discovery_tests {
             1,
             "host-001 port 1's remote_port should be switch-1's port 1"
         );
+    }
+
+    /// switch-1 (the root, as when running on a switch) has four parallel,
+    /// deliberately crossed links to one 4-port CA (think GPU):
+    /// switch port -> CA port: 1->3, 2->1, 3->4, 4->2.
+    const PARALLEL_LINKS: [(u8, u8); 4] = [(1, 3), (2, 1), (3, 4), (4, 2)];
+
+    fn build_switch_root_parallel_links_fabric(fabric: &mut ibmad::sim::Fabric) {
+        let switch1 = ibmad::sim::Node::new_switch("switch-1", 0x1001);
+        let switch1_rc = fabric.add_switch(switch1);
+        {
+            let mut s1 = switch1_rc.borrow_mut();
+            for i in 0..=5 {
+                let port = Port::new_port(i, 100, switch1_rc.clone());
+                s1.ports.push(Rc::new(RefCell::new(port)));
+            }
+        }
+
+        let mut gpu = ibmad::sim::Node::new_hca("gpu-001", 0x4001);
+        gpu.node_info.nports = 4;
+        let gpu_rc = fabric.add_hca(gpu);
+        for i in 1..=4 {
+            let port = Rc::new(RefCell::new(Port::new_port(i, 400 + i as u16, gpu_rc.clone())));
+            gpu_rc.borrow_mut().ports.push(port);
+        }
+
+        for (sw_port, gpu_port) in PARALLEL_LINKS {
+            let s = switch1_rc.borrow().ports[sw_port as usize].clone();
+            let g = gpu_rc.borrow().ports[gpu_port as usize - 1].clone();
+            ibmad::sim::connect_ports(&s, &g);
+        }
+
+        let s1_p0 = switch1_rc.borrow().ports[0].clone();
+        fabric.dr_paths.insert([0; 64], Rc::downgrade(&s1_p0));
+    }
+
+    /// Issue #8: first-hop linking used the neighbor's *stored* `local_port`
+    /// (from whichever link discovered it first), so every parallel link from
+    /// the root to the same neighbor was paired with that one port.
+    #[test]
+    fn test_switch_root_parallel_links_pair_correct_ports() {
+        common::setup();
+
+        let (client, server) = UnixStream::pair().unwrap();
+        let client_file = unsafe { fs::File::from_raw_fd(client.into_raw_fd()) };
+        let server_file = unsafe { fs::File::from_raw_fd(server.into_raw_fd()) };
+
+        let (tx, rx) = channel::<bool>();
+        let barrier = sync::Arc::new(sync::Barrier::new(2));
+        let barrier_clone = barrier.clone();
+
+        thread::spawn(move || {
+            let mut fabric = ibmad::sim::Fabric::new(server_file);
+            build_switch_root_parallel_links_fabric(&mut fabric);
+            barrier_clone.wait();
+            let _ = fabric.run(rx);
+        });
+
+        let mut fabric =
+            ibmad::discovery::Fabric::new(IbMadPort { file: client_file }, 0, 50, 1);
+
+        barrier.wait();
+        fabric
+            .seq_discover()
+            .expect("Discovery should not fail hard");
+        let _ = tx.send(true);
+
+        assert_eq!(fabric.nodes.len(), 2, "Should discover switch-1 and gpu-001");
+
+        let find = |guid: u64| {
+            fabric
+                .nodes
+                .iter()
+                .find(|n| n.read().unwrap().node_guid == guid)
+                .unwrap()
+                .clone()
+        };
+        let remote_of = |node: &sync::Arc<sync::RwLock<ibmad::discovery::Node>>, port: u8| {
+            let node = node.read().unwrap();
+            let p = node
+                .ports
+                .iter()
+                .find(|p| p.read().unwrap().number == port)
+                .unwrap()
+                .clone();
+            let remote = p
+                .read()
+                .unwrap()
+                .remote_port
+                .as_ref()
+                .and_then(|w| w.upgrade());
+            remote.map(|r| r.read().unwrap().number)
+        };
+
+        let switch1 = find(0x1001);
+        let gpu = find(0x4001);
+        for (sw_port, gpu_port) in PARALLEL_LINKS {
+            assert_eq!(
+                remote_of(&switch1, sw_port),
+                Some(gpu_port),
+                "switch-1 port {sw_port} should be linked to gpu-001 port {gpu_port}"
+            );
+            assert_eq!(
+                remote_of(&gpu, gpu_port),
+                Some(sw_port),
+                "gpu-001 port {gpu_port} should be linked back to switch-1 port {sw_port}"
+            );
+        }
     }
 
     fn add_nvlink_switch(

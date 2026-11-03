@@ -344,6 +344,7 @@ mod mad_tests {
             port_info.lid as u16,
             port_info.number as u8,
             0,
+            0,
         ) {
             Ok(resp) => resp,
             Err(e) => {
@@ -459,7 +460,7 @@ mod mad_tests {
         };
 
         let perf_response =
-            match mad::query_port_counters_extended(&mut port, agent_id, 1000, 1, 38, 255, 0) {
+            match mad::query_port_counters_extended(&mut port, agent_id, 1000, 1, 38, 255, 0, 0) {
                 Ok(resp) => resp,
                 Err(e) => {
                     panic!(

@@ -7,6 +7,10 @@ pub enum IbPortPhyState {
     LinkUp = 5,
     LinkErrorRecovery = 6,
     PhyTest = 7,
+    /// Reserved or vendor-specific value not listed above. Never produced by
+    /// `TryFrom`; discovery substitutes it so an odd physical state doesn't
+    /// cost an otherwise valid port.
+    Unknown = 0xFF,
 }
 
 impl TryFrom<u8> for IbPortPhyState {
